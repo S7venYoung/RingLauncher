@@ -5,12 +5,12 @@ struct RingMenuView: View {
     @State private var scrollAmount: CGFloat = 0
     let items = ["复制", "粘贴", "截图", "搜索", "终端"]
     
-    let ringRadius: CGFloat = 120
+    let ringRadius: Double = 120 // 改为 Double 减少转换歧义
     let panelSize: CGFloat = 400
 
     var body: some View {
         ZStack {
-            // 中心圆环
+            // 中心圆环背景
             Circle()
                 .fill(.ultraThinMaterial)
                 .frame(width: 100, height: 100)
@@ -36,11 +36,13 @@ struct RingMenuView: View {
         })
     }
 
-    // 拆解位置计算逻辑
+    // 修复歧义：明确使用 Double 类型进行三角函数运算
     private func calculatePosition(for index: Int) -> CGPoint {
         let total = Double(items.count)
-        let angle = (Double(index) / total * 2 * .pi) - (.pi / 2)
-        return CGPoint(x: cos(angle) * ringRadius, y: sin(angle) * ringRadius)
+        let angle: Double = (Double(index) / total * 2.0 * .pi) - (.pi / 2.0)
+        // 显式转换为 CGFloat 以兼容 CGPoint
+        return CGPoint(x: CGFloat(cos(angle) * ringRadius), 
+                       y: CGFloat(sin(angle) * ringRadius))
     }
 
     private func handleScroll(delta: CGFloat) {
@@ -48,13 +50,14 @@ struct RingMenuView: View {
         if abs(scrollAmount) > 10 {
             selectedIndex = (selectedIndex + (scrollAmount > 0 ? 1 : -1) + items.count) % items.count
             scrollAmount = 0
+            // 现在 WindowManager 有这个成员了，不会再报错
             WindowManager.shared.currentSelection = items[selectedIndex]
             NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
         }
     }
 }
 
-// 滚轮辅助组件
+// 滚轮辅助组件保持不变
 struct ScrollDetector: NSViewRepresentable {
     var onScroll: (CGFloat) -> Void
     func makeNSView(context: Context) -> NSView { ScrollViewHelper(onScroll: onScroll) }
