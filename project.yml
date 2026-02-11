@@ -9,5 +9,7 @@ targets:
     sources: 
       - path: RingLauncher
     settings:
+      # 重点修复：手动指定一个 Bundle Identifier
+      PRODUCT_BUNDLE_IDENTIFIER: com.ring.launcher.RingLauncher
       INFOPLIST_FILE: RingLauncher/Resources/Info.plist
       CODE_SIGNING_ALLOWED: NO
