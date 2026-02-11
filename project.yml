@@ -9,10 +9,11 @@ targets:
     sources: 
       - path: RingLauncher
     settings:
-      # 显式指定 Bundle Identifier
+      # 关键修改：直接在这里写死 Bundle ID
       PRODUCT_BUNDLE_IDENTIFIER: com.ring.launcher.RingLauncher
-      # 显式指定版本号
+      # 同时指定 Info.plist 路径
+      INFOPLIST_FILE: RingLauncher/Resources/Info.plist
+      # 补全版本号，防止 archive 报错
       MARKETING_VERSION: 1.0.0
       CURRENT_PROJECT_VERSION: 1
-      INFOPLIST_FILE: RingLauncher/Resources/Info.plist
       CODE_SIGNING_ALLOWED: NO
