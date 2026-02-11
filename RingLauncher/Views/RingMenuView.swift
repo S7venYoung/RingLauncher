@@ -2,66 +2,60 @@ import SwiftUI
 
 struct RingMenuView: View {
     @State private var selectedIndex: Int = 0
-    @State private var scrollBuffer: CGFloat = 0
+    @State private var scrollAmount: CGFloat = 0
+    let items = ["复制", "粘贴", "截图", "搜索", "终端"]
     
-    let items = [
-        ActionItem(title: "复制", icon: "doc.on.doc") { print("Copying...") },
-        ActionItem(title: "粘贴", icon: "doc.on.clipboard") { print("Pasting...") },
-        ActionItem(title: "截图", icon: "camera") { print("Screenshot...") },
-        ActionItem(title: "搜索", icon: "magnifyingglass") { print("Searching...") },
-        ActionItem(title: "终端", icon: "terminal") { print("Terminal...") }
-    ]
-    
-    let radius: CGFloat = 110
+    let ringRadius: CGFloat = 120
+    let panelSize: CGFloat = 400
 
     var body: some View {
         ZStack {
-            // 背景磨砂圆环
+            // 中心圆环
             Circle()
                 .fill(.ultraThinMaterial)
-                .frame(width: 80, height: 80)
-            
-            ForEach(0..<items.count, id: \.self) { index in
-                let angle = Double(index) / Double(items.count) * 2 * .pi - .pi / 2
-                let isSelected = index == selectedIndex
+                .frame(width: 100, height: 100)
+                .overlay(Text(items[selectedIndex]).bold())
+
+            ForEach(0..<items.count, id: \.self) { i in
+                let isSelected = (i == selectedIndex)
+                let pos = calculatePosition(for: i)
                 
-                VStack(spacing: 8) {
-                    Image(systemName: items[index].icon)
-                        .font(.system(size: isSelected ? 28 : 20, weight: .medium))
-                    if isSelected {
-                        Text(items[index].title)
-                            .font(.caption2).bold()
-                            .transition(.opacity)
-                    }
+                VStack {
+                    Image(systemName: "star.fill")
+                        .foregroundColor(isSelected ? .blue : .gray)
+                        .font(.system(size: isSelected ? 30 : 20))
                 }
-                .foregroundColor(isSelected ? .blue : .primary)
-                .scaleEffect(isSelected ? 1.3 : 1.0)
-                .offset(x: cos(angle) * radius, y: sin(angle) * radius)
-                .animation(.spring(response: 0.35, dampingFraction: 0.7), value: selectedIndex)
+                .scaleEffect(isSelected ? 1.5 : 1.0)
+                .offset(x: pos.x, y: pos.y)
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: selectedIndex)
             }
         }
-        .frame(width: 400, height: 400)
-        .background(ScrollHandler { delta in
-            handleScroll(delta)
+        .frame(width: panelSize, height: panelSize)
+        .background(ScrollDetector { delta in
+            handleScroll(delta: delta)
         })
     }
 
-    private func handleScroll(_ delta: CGFloat) {
-        scrollBuffer += delta
-        if abs(scrollBuffer) > 15 { // 灵敏度阈值
-            if scrollBuffer > 0 {
-                selectedIndex = (selectedIndex + 1) % items.count
-            } else {
-                selectedIndex = (selectedIndex - 1 + items.count) % items.count
-            }
-            scrollBuffer = 0
+    // 拆解位置计算逻辑
+    private func calculatePosition(for index: Int) -> CGPoint {
+        let total = Double(items.count)
+        let angle = (Double(index) / total * 2 * .pi) - (.pi / 2)
+        return CGPoint(x: cos(angle) * ringRadius, y: sin(angle) * ringRadius)
+    }
+
+    private func handleScroll(delta: CGFloat) {
+        scrollAmount += delta
+        if abs(scrollAmount) > 10 {
+            selectedIndex = (selectedIndex + (scrollAmount > 0 ? 1 : -1) + items.count) % items.count
+            scrollAmount = 0
+            WindowManager.shared.currentSelection = items[selectedIndex]
             NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
         }
     }
 }
 
-// 辅助组件：截获滚轮事件
-struct ScrollHandler: NSViewRepresentable {
+// 滚轮辅助组件
+struct ScrollDetector: NSViewRepresentable {
     var onScroll: (CGFloat) -> Void
     func makeNSView(context: Context) -> NSView { ScrollViewHelper(onScroll: onScroll) }
     func updateNSView(_ nsView: NSView, context: Context) {}
@@ -69,10 +63,7 @@ struct ScrollHandler: NSViewRepresentable {
 
 class ScrollViewHelper: NSView {
     var onScroll: (CGFloat) -> Void
-    init(onScroll: @escaping (CGFloat) -> Void) {
-        self.onScroll = onScroll
-        super.init(frame: .zero)
-    }
+    init(onScroll: @escaping (CGFloat) -> Void) { self.onScroll = onScroll; super.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError() }
     override func scrollWheel(with event: NSEvent) { onScroll(event.scrollingDeltaY) }
 }
