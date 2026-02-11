@@ -1,0 +1,43 @@
+name: Build RingLauncher
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Project
+        run: xcodegen generate
+
+      - name: Build App
+        run: |
+          xcodebuild -project RingLauncher.xcodeproj \
+                     -scheme RingLauncher \
+                     -configuration Release \
+                     -derivedDataPath Build/ \
+                     archive -archivePath Build/RingLauncher.xcarchive \
+                     CODE_SIGNING_ALLOWED=NO
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          mkdir -p dist
+          cp -R Build/RingLauncher.xcarchive/Products/Applications/RingLauncher.app dist/
+          create-dmg \
+            --volname "RingLauncher" \
+            --window-size 500 300 \
+            --icon-size 100 \
+            --app-drop-link 350 150 \
+            "RingLauncher.dmg" \
+            "dist/RingLauncher.app"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RingLauncher-DMG
+          path: RingLauncher.dmg
