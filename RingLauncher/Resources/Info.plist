@@ -3,7 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>LSUIElement</key>
-    <true/> <key>NSAccessibilityUsageDescription</key>
-    <string>需要辅助功能权限以模拟快捷键操作。</string>
+    <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string> <key>NSAccessibilityUsageDescription</key>
+    <string>需要辅助功能权限来模拟按键。</string>
 </dict>
 </plist>
