@@ -41,3 +41,13 @@ jobs:
         with:
           name: RingLauncher-DMG
           path: RingLauncher.dmg
+
+      - name: Build App
+        run: |
+          xcodebuild -project RingLauncher.xcodeproj \
+                     -scheme RingLauncher \
+                     -configuration Release \
+                     -derivedDataPath Build/ \
+                     archive -archivePath Build/RingLauncher.xcarchive \
+                     PRODUCT_BUNDLE_IDENTIFIER=com.ring.launcher.RingLauncher \
+                     CODE_SIGNING_ALLOWED=NO
