@@ -112,7 +112,8 @@ private func fourCC(_ value: String) -> OSType {
 final class RingPanelController {
     private let model = RingModel()
     private let panel: NSPanel
-    private var inputMonitor: Any?
+    private var globalInputMonitor: Any?
+    private var localInputMonitor: Any?
     private var scrollAccumulator: CGFloat = 0
 
     init() {
@@ -155,42 +156,68 @@ final class RingPanelController {
         panel.setFrameOrigin(origin)
         panel.orderFrontRegardless()
 
-        inputMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] event in
+        let eventMask: NSEvent.EventTypeMask = [.keyDown, .scrollWheel]
+
+        globalInputMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
             DispatchQueue.main.async {
                 self?.handle(event)
             }
         }
+
+        localInputMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { [weak self] event in
+            guard let self, self.panel.isVisible else { return event }
+            if self.handle(event) {
+                return nil
+            }
+            return event
+        }
     }
 
-    private func handle(_ event: NSEvent) {
+    @discardableResult
+    private func handle(_ event: NSEvent) -> Bool {
         if event.type == .scrollWheel {
-            scrollAccumulator += event.scrollingDeltaY
-            guard abs(scrollAccumulator) >= 1 else { return }
+            let vertical = event.scrollingDeltaY
+            let horizontal = event.scrollingDeltaX
+            let delta = abs(vertical) >= abs(horizontal) ? vertical : horizontal
+            guard delta != 0 else { return false }
+
+            scrollAccumulator += delta
+            let threshold: CGFloat = event.hasPreciseScrollingDeltas ? 0.8 : 0.1
+            guard abs(scrollAccumulator) >= threshold else { return true }
             model.moveSelection(by: scrollAccumulator > 0 ? -1 : 1)
             scrollAccumulator = 0
-            return
+            return true
         }
 
         switch Int(event.keyCode) {
         case kVK_Escape:
             model.escape()
+            return true
         case kVK_LeftArrow, kVK_UpArrow:
             model.moveSelection(by: -1)
+            return true
         case kVK_RightArrow, kVK_DownArrow:
             model.moveSelection(by: 1)
+            return true
         case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space:
             model.performSelected()
+            return true
         default:
-            break
+            return false
         }
     }
 
     private func hide() {
         panel.orderOut(nil)
-        if let inputMonitor {
-            NSEvent.removeMonitor(inputMonitor)
-            self.inputMonitor = nil
+        if let globalInputMonitor {
+            NSEvent.removeMonitor(globalInputMonitor)
+            self.globalInputMonitor = nil
         }
+        if let localInputMonitor {
+            NSEvent.removeMonitor(localInputMonitor)
+            self.localInputMonitor = nil
+        }
+        scrollAccumulator = 0
     }
 }
 
