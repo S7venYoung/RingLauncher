@@ -7,6 +7,7 @@
 - 点击应用进入第二层，显示“切换到、所有窗口、隐藏、退出、返回”。
 - 鼠标滚轮或映射成滚轮的编码器旋转可循环选择，方向键同样可用。
 - 同时监听应用内与全局滚轮事件，并兼容纵向、横向和离散滚轮步进。
+- 圆环显示时会成为 key window，确保 OrbitLauncher 自己在前台时也能接收滚轮。
 - 编码器按下若映射为 `Return`/小键盘回车即可执行当前高亮项。
 - 点击中心、按 `Esc` 或再次按 `⌥Space` 返回/关闭。
 - 菜单栏显示圆环图标，可用于显示圆环或退出；Dock 中不显示常驻图标。
@@ -22,6 +23,12 @@
 `系统设置 → 隐私与安全性 → 输入监控`
 
 中允许 OrbitLauncher。当前原型的全局热键使用 Carbon Hot Key，通常不依赖辅助功能权限。
+
+可用以下命令实时检查滚轮是否到达应用：
+
+```bash
+log stream --style compact --predicate 'subsystem == "com.s7venyoung.orbitlauncher"'
+```
 
 ## GitHub Actions 构建
 

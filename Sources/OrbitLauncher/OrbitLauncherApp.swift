@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import OSLog
 import SwiftUI
 
 @main
@@ -110,16 +111,20 @@ private func fourCC(_ value: String) -> OSType {
 
 @MainActor
 final class RingPanelController {
+    private let logger = Logger(
+        subsystem: "com.s7venyoung.orbitlauncher",
+        category: "Input"
+    )
     private let model = RingModel()
-    private let panel: NSPanel
+    private let panel: RingPanel
     private var globalInputMonitor: Any?
     private var localInputMonitor: Any?
     private var scrollAccumulator: CGFloat = 0
 
     init() {
-        panel = NSPanel(
+        panel = RingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
@@ -154,19 +159,20 @@ final class RingPanelController {
             y: min(max(mouse.y - size.height / 2, visibleFrame.minY), visibleFrame.maxY - size.height)
         )
         panel.setFrameOrigin(origin)
-        panel.orderFrontRegardless()
+        panel.makeKeyAndOrderFront(nil)
+        logger.notice("Ring shown; keyWindow=\(self.panel.isKeyWindow, privacy: .public)")
 
         let eventMask: NSEvent.EventTypeMask = [.keyDown, .scrollWheel]
 
         globalInputMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
             DispatchQueue.main.async {
-                self?.handle(event)
+                self?.handle(event, source: "global")
             }
         }
 
         localInputMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { [weak self] event in
             guard let self, self.panel.isVisible else { return event }
-            if self.handle(event) {
+            if self.handle(event, source: "local") {
                 return nil
             }
             return event
@@ -174,7 +180,7 @@ final class RingPanelController {
     }
 
     @discardableResult
-    private func handle(_ event: NSEvent) -> Bool {
+    private func handle(_ event: NSEvent, source: String) -> Bool {
         if event.type == .scrollWheel {
             let vertical = event.scrollingDeltaY
             let horizontal = event.scrollingDeltaX
@@ -184,7 +190,11 @@ final class RingPanelController {
             scrollAccumulator += delta
             let threshold: CGFloat = event.hasPreciseScrollingDeltas ? 0.8 : 0.1
             guard abs(scrollAccumulator) >= threshold else { return true }
-            model.moveSelection(by: scrollAccumulator > 0 ? -1 : 1)
+            let step = scrollAccumulator > 0 ? -1 : 1
+            model.moveSelection(by: step)
+            logger.notice(
+                "Wheel source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
+            )
             scrollAccumulator = 0
             return true
         }
@@ -219,6 +229,11 @@ final class RingPanelController {
         }
         scrollAccumulator = 0
     }
+}
+
+final class RingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 }
 
 @MainActor
