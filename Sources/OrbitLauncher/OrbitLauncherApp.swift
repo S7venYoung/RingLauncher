@@ -148,6 +148,14 @@ final class AppSettings: ObservableObject {
             NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
         }
     }
+    @Published var surfaceDialStepsPerRotation: Int {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialStepsPerRotation,
+                forKey: Keys.surfaceDialStepsPerRotation
+            )
+        }
+    }
     @Published private(set) var launchAtLogin: Bool
 
     private enum Keys {
@@ -162,6 +170,7 @@ final class AppSettings: ObservableObject {
         static let appearance = "appearance"
         static let showItemNames = "showItemNames"
         static let surfaceDialEnabled = "surfaceDialEnabled"
+        static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
     }
 
     private init() {
@@ -177,6 +186,8 @@ final class AppSettings: ObservableObject {
         appearance = defaults.string(forKey: Keys.appearance) ?? "system"
         showItemNames = defaults.object(forKey: Keys.showItemNames) as? Bool ?? true
         surfaceDialEnabled = defaults.object(forKey: Keys.surfaceDialEnabled) as? Bool ?? true
+        surfaceDialStepsPerRotation =
+            defaults.object(forKey: Keys.surfaceDialStepsPerRotation) as? Int ?? 20
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -358,6 +369,12 @@ struct SettingsView: View {
 
                 Section("Surface Dial（实验性）") {
                     Toggle("启用原始 HID 支持", isOn: $settings.surfaceDialEnabled)
+                    Stepper(
+                        "每圈步数：\(settings.surfaceDialStepsPerRotation)",
+                        value: $settings.surfaceDialStepsPerRotation,
+                        in: 10...40,
+                        step: 2
+                    )
                     HStack {
                         Circle()
                             .fill(surfaceDial.isConnected ? Color.green : Color.secondary.opacity(0.45))
@@ -365,7 +382,7 @@ struct SettingsView: View {
                         Text(surfaceDial.isConnected ? "Surface Dial 已连接" : "等待 Surface Dial（045E:091B）")
                         Spacer()
                     }
-                    Text("旋转选择；圆环打开时按下执行。设备需要先在 macOS 蓝牙设置中配对。")
+                    Text("短按呼出或执行；长按 200 ms 呼出圆环。旋转按设备分辨率换算为稳定步进。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -491,7 +508,7 @@ final class RingPanelController {
                 self.toggle()
             }
             dialLongPressWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
             return
         }
 
