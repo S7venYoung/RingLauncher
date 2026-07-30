@@ -6,11 +6,22 @@ import SwiftUI
 @main
 struct OrbitLauncherApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var settings = AppSettings.shared
 
     var body: some Scene {
         MenuBarExtra("OrbitLauncher", systemImage: "circle.hexagongrid") {
-            Button("显示圆环  ⌥Space") {
+            Button("显示圆环  \(settings.shortcutText)") {
                 NotificationCenter.default.post(name: .toggleOrbitLauncher, object: nil)
+            }
+            Divider()
+            if #available(macOS 14.0, *) {
+                SettingsLink {
+                    Text("设置…")
+                }
+            } else {
+                Button("设置…") {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                }
             }
             Divider()
             Button("退出 OrbitLauncher") {
@@ -19,29 +30,22 @@ struct OrbitLauncherApp: App {
         }
 
         Settings {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Orbit Launcher").font(.title2.bold())
-                Text("按 ⌥Space 呼出圆环。")
-                Text("Esc 返回上一层或关闭；再次按快捷键也可关闭。")
-                    .foregroundStyle(.secondary)
-            }
-            .padding(24)
-            .frame(width: 380)
+            SettingsView(settings: settings)
         }
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: RingPanelController?
     private var hotKey: GlobalHotKey?
     private var toggleObserver: NSObjectProtocol?
+    private var settingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         controller = RingPanelController()
-        hotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
-            self?.controller?.toggle()
-        }
+        registerHotKey()
         toggleObserver = NotificationCenter.default.addObserver(
             forName: .toggleOrbitLauncher,
             object: nil,
@@ -49,17 +53,191 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             self?.controller?.toggle()
         }
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .orbitSettingsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.registerHotKey()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         if let toggleObserver {
             NotificationCenter.default.removeObserver(toggleObserver)
         }
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
+    }
+
+    private func registerHotKey() {
+        let settings = AppSettings.shared
+        hotKey = GlobalHotKey(
+            keyCode: UInt32(settings.hotKeyCode),
+            modifiers: UInt32(settings.hotKeyModifiers)
+        ) { [weak self] in
+            DispatchQueue.main.async {
+                self?.controller?.toggle()
+            }
+        }
     }
 }
 
 extension Notification.Name {
     static let toggleOrbitLauncher = Notification.Name("toggleOrbitLauncher")
+    static let orbitSettingsChanged = Notification.Name("orbitSettingsChanged")
+}
+
+@MainActor
+final class AppSettings: ObservableObject {
+    static let shared = AppSettings()
+
+    @Published var hotKeyCode: Int {
+        didSet { saveShortcut() }
+    }
+    @Published var hotKeyModifiers: Int {
+        didSet { saveShortcut() }
+    }
+    @Published var wheelPulsesPerStep: Int {
+        didSet { UserDefaults.standard.set(wheelPulsesPerStep, forKey: Keys.wheelPulses) }
+    }
+    @Published var wheelDebounceMilliseconds: Int {
+        didSet { UserDefaults.standard.set(wheelDebounceMilliseconds, forKey: Keys.wheelDebounce) }
+    }
+
+    private enum Keys {
+        static let hotKeyCode = "hotKeyCode"
+        static let hotKeyModifiers = "hotKeyModifiers"
+        static let wheelPulses = "wheelPulsesPerStep"
+        static let wheelDebounce = "wheelDebounceMilliseconds"
+    }
+
+    private init() {
+        let defaults = UserDefaults.standard
+        hotKeyCode = defaults.object(forKey: Keys.hotKeyCode) as? Int ?? kVK_Space
+        hotKeyModifiers = defaults.object(forKey: Keys.hotKeyModifiers) as? Int ?? optionKey
+        wheelPulsesPerStep = defaults.object(forKey: Keys.wheelPulses) as? Int ?? 4
+        wheelDebounceMilliseconds = defaults.object(forKey: Keys.wheelDebounce) as? Int ?? 180
+    }
+
+    var shortcutText: String {
+        let modifier = HotKeyModifier.options.first(where: { $0.value == hotKeyModifiers })?.label ?? "⌥"
+        let key = HotKeyKey.options.first(where: { $0.code == hotKeyCode })?.label ?? "Space"
+        return modifier + key
+    }
+
+    private func saveShortcut() {
+        UserDefaults.standard.set(hotKeyCode, forKey: Keys.hotKeyCode)
+        UserDefaults.standard.set(hotKeyModifiers, forKey: Keys.hotKeyModifiers)
+        NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
+    }
+}
+
+struct HotKeyModifier: Identifiable {
+    let value: Int
+    let label: String
+    var id: Int { value }
+
+    static let options: [HotKeyModifier] = [
+        .init(value: optionKey, label: "⌥"),
+        .init(value: cmdKey, label: "⌘"),
+        .init(value: controlKey, label: "⌃"),
+        .init(value: shiftKey, label: "⇧"),
+        .init(value: optionKey | cmdKey, label: "⌥⌘"),
+        .init(value: controlKey | optionKey, label: "⌃⌥"),
+        .init(value: controlKey | cmdKey, label: "⌃⌘"),
+        .init(value: shiftKey | optionKey, label: "⇧⌥"),
+        .init(value: shiftKey | cmdKey, label: "⇧⌘")
+    ]
+}
+
+struct HotKeyKey: Identifiable {
+    let code: Int
+    let label: String
+    var id: Int { code }
+
+    static let options: [HotKeyKey] = [
+        .init(code: kVK_Space, label: "Space"),
+        .init(code: kVK_ANSI_A, label: "A"), .init(code: kVK_ANSI_B, label: "B"),
+        .init(code: kVK_ANSI_C, label: "C"), .init(code: kVK_ANSI_D, label: "D"),
+        .init(code: kVK_ANSI_E, label: "E"), .init(code: kVK_ANSI_F, label: "F"),
+        .init(code: kVK_ANSI_G, label: "G"), .init(code: kVK_ANSI_H, label: "H"),
+        .init(code: kVK_ANSI_I, label: "I"), .init(code: kVK_ANSI_J, label: "J"),
+        .init(code: kVK_ANSI_K, label: "K"), .init(code: kVK_ANSI_L, label: "L"),
+        .init(code: kVK_ANSI_M, label: "M"), .init(code: kVK_ANSI_N, label: "N"),
+        .init(code: kVK_ANSI_O, label: "O"), .init(code: kVK_ANSI_P, label: "P"),
+        .init(code: kVK_ANSI_Q, label: "Q"), .init(code: kVK_ANSI_R, label: "R"),
+        .init(code: kVK_ANSI_S, label: "S"), .init(code: kVK_ANSI_T, label: "T"),
+        .init(code: kVK_ANSI_U, label: "U"), .init(code: kVK_ANSI_V, label: "V"),
+        .init(code: kVK_ANSI_W, label: "W"), .init(code: kVK_ANSI_X, label: "X"),
+        .init(code: kVK_ANSI_Y, label: "Y"), .init(code: kVK_ANSI_Z, label: "Z"),
+        .init(code: kVK_F1, label: "F1"), .init(code: kVK_F2, label: "F2"),
+        .init(code: kVK_F3, label: "F3"), .init(code: kVK_F4, label: "F4"),
+        .init(code: kVK_F5, label: "F5"), .init(code: kVK_F6, label: "F6"),
+        .init(code: kVK_F7, label: "F7"), .init(code: kVK_F8, label: "F8"),
+        .init(code: kVK_F9, label: "F9"), .init(code: kVK_F10, label: "F10"),
+        .init(code: kVK_F11, label: "F11"), .init(code: kVK_F12, label: "F12")
+    ]
+}
+
+struct SettingsView: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Form {
+            Section("启动快捷键") {
+                HStack {
+                    Picker("修饰键", selection: $settings.hotKeyModifiers) {
+                        ForEach(HotKeyModifier.options) { option in
+                            Text(option.label).tag(option.value)
+                        }
+                    }
+                    Picker("主键", selection: $settings.hotKeyCode) {
+                        ForEach(HotKeyKey.options) { key in
+                            Text(key.label).tag(key.code)
+                        }
+                    }
+                    Text(settings.shortcutText)
+                        .font(.system(.body, design: .monospaced).bold())
+                        .frame(minWidth: 70)
+                }
+            }
+
+            Section("编码器与滚轮") {
+                Stepper(
+                    "每切换一项：\(settings.wheelPulsesPerStep) 个滚轮脉冲",
+                    value: $settings.wheelPulsesPerStep,
+                    in: 1...30
+                )
+                HStack {
+                    Text("防抖间隔")
+                    Slider(
+                        value: Binding(
+                            get: { Double(settings.wheelDebounceMilliseconds) },
+                            set: { settings.wheelDebounceMilliseconds = Int($0) }
+                        ),
+                        in: 0...600,
+                        step: 20
+                    )
+                    Text("\(settings.wheelDebounceMilliseconds) ms")
+                        .monospacedDigit()
+                        .frame(width: 64, alignment: .trailing)
+                }
+                Text("一格跳过多个项目时，提高脉冲数或防抖间隔。推荐从 4 个脉冲、180 ms 开始。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Text("按 Esc 返回上一环或关闭；按回车执行当前高亮项。")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(16)
+        .frame(width: 520, height: 340)
+    }
 }
 
 final class GlobalHotKey {
@@ -120,6 +298,7 @@ final class RingPanelController {
     private var globalInputMonitor: Any?
     private var localInputMonitor: Any?
     private var scrollAccumulator: CGFloat = 0
+    private var lastWheelSelectionTime: TimeInterval = 0
 
     init() {
         panel = RingPanel(
@@ -187,13 +366,29 @@ final class RingPanelController {
             let delta = abs(vertical) >= abs(horizontal) ? vertical : horizontal
             guard delta != 0 else { return false }
 
-            scrollAccumulator += delta
-            let threshold: CGFloat = event.hasPreciseScrollingDeltas ? 0.8 : 0.1
+            let normalizedDelta: CGFloat
+            if event.hasPreciseScrollingDeltas {
+                normalizedDelta = delta
+            } else {
+                normalizedDelta = delta > 0 ? 1 : -1
+            }
+
+            scrollAccumulator += normalizedDelta
+            let threshold = CGFloat(AppSettings.shared.wheelPulsesPerStep)
             guard abs(scrollAccumulator) >= threshold else { return true }
+
+            let now = Date.timeIntervalSinceReferenceDate
+            let debounce = Double(AppSettings.shared.wheelDebounceMilliseconds) / 1_000
+            guard now - lastWheelSelectionTime >= debounce else {
+                scrollAccumulator = 0
+                return true
+            }
+
             let step = scrollAccumulator > 0 ? -1 : 1
             model.moveSelection(by: step)
+            lastWheelSelectionTime = now
             logger.notice(
-                "Wheel source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
+                "Wheel source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) pulses=\(self.settingsPulseCount, privacy: .public) debounceMs=\(self.settingsDebounce, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
             )
             scrollAccumulator = 0
             return true
@@ -228,7 +423,11 @@ final class RingPanelController {
             self.localInputMonitor = nil
         }
         scrollAccumulator = 0
+        lastWheelSelectionTime = 0
     }
+
+    private var settingsPulseCount: Int { AppSettings.shared.wheelPulsesPerStep }
+    private var settingsDebounce: Int { AppSettings.shared.wheelDebounceMilliseconds }
 }
 
 final class RingPanel: NSPanel {
