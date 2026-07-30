@@ -10,6 +10,7 @@ final class SurfaceDialManager: ObservableObject {
     static let productID = 0x091B
 
     @Published private(set) var isConnected = false
+    @Published private(set) var resolution = 360
 
     var onRotation: ((Int) -> Void)?
     var onButtonChanged: ((Bool) -> Void)?
@@ -21,6 +22,7 @@ final class SurfaceDialManager: ObservableObject {
     private var manager: IOHIDManager?
     private var running = false
     private var lastButtonPressed = false
+    private var tickAccumulator = 0
 
     private init() {}
 
@@ -65,47 +67,89 @@ final class SurfaceDialManager: ObservableObject {
         self.manager = nil
         running = false
         isConnected = false
+        resolution = 360
         lastButtonPressed = false
+        tickAccumulator = 0
     }
 
-    fileprivate func deviceAdded() {
+    fileprivate func deviceAdded(_ device: IOHIDDevice) {
+        resolution = readResolution(from: device) ?? 360
+        tickAccumulator = 0
         isConnected = true
-        logger.notice("Surface Dial connected")
+        logger.notice("Surface Dial connected resolution=\(self.resolution, privacy: .public) ticks/rev")
     }
 
     fileprivate func deviceRemoved() {
         isConnected = false
+        resolution = 360
         lastButtonPressed = false
+        tickAccumulator = 0
         logger.notice("Surface Dial disconnected")
     }
 
     fileprivate func process(reportID: UInt32, bytes: [UInt8]) {
-        let payload: ArraySlice<UInt8>
-        if bytes.first == 1, bytes.count >= 3 {
-            payload = bytes.dropFirst()
-        } else if reportID == 1, bytes.count >= 2 {
-            payload = bytes[...]
-        } else {
+        // Depending on the IOKit callback, the report ID can be included in
+        // the byte buffer or supplied only through reportID.
+        let payload = bytes.first == 1 && bytes.count >= 4
+            ? Array(bytes.dropFirst())
+            : bytes
+        guard reportID == 1 || bytes.first == 1, payload.count >= 3 else {
             logger.debug("Ignoring HID report id=\(reportID, privacy: .public) length=\(bytes.count, privacy: .public)")
             return
         }
 
-        guard payload.count >= 2 else { return }
-        let values = Array(payload)
-        let pressed = values[0] & 1 == 1
+        let pressed = payload[0] & 1 == 1
         if pressed != lastButtonPressed {
             lastButtonPressed = pressed
             onButtonChanged?(pressed)
         }
 
-        switch values[1] {
-        case 0x01:
-            onRotation?(1)
-        case 0xFF:
-            onRotation?(-1)
-        default:
-            break
+        let rawDelta = Int16(
+            bitPattern: UInt16(payload[1]) | (UInt16(payload[2]) << 8)
+        )
+        guard rawDelta != 0 else { return }
+
+        tickAccumulator += Int(rawDelta)
+        let stepsPerRotation = max(1, AppSettings.shared.surfaceDialStepsPerRotation)
+        let ticksPerStep = max(1, resolution / stepsPerRotation)
+        let logicalSteps = tickAccumulator / ticksPerStep
+        guard logicalSteps != 0 else { return }
+
+        tickAccumulator -= logicalSteps * ticksPerStep
+        let direction = logicalSteps > 0 ? 1 : -1
+        for _ in 0..<abs(logicalSteps) {
+            onRotation?(direction)
         }
+        logger.notice(
+            "Surface Dial delta=\(rawDelta, privacy: .public) logicalSteps=\(logicalSteps, privacy: .public) remainder=\(self.tickAccumulator, privacy: .public)"
+        )
+    }
+
+    private func readResolution(from device: IOHIDDevice) -> Int? {
+        let matching: [String: Any] = [
+            kIOHIDElementUsagePageKey as String: 1,
+            kIOHIDElementUsageKey as String: 0x48
+        ]
+        guard let elements = IOHIDDeviceCopyMatchingElements(
+            device,
+            matching as CFDictionary,
+            IOOptionBits(kIOHIDOptionsTypeNone)
+        ) as? [IOHIDElement] else {
+            return nil
+        }
+
+        for element in elements where IOHIDElementGetType(element) == kIOHIDElementTypeFeature {
+            var value: Unmanaged<IOHIDValue>?
+            guard IOHIDDeviceGetValue(device, element, &value) == kIOReturnSuccess,
+                  let value else {
+                continue
+            }
+            let candidate = Int(IOHIDValueGetIntegerValue(value.takeUnretainedValue()))
+            if candidate > 0 {
+                return candidate
+            }
+        }
+        return nil
     }
 }
 
@@ -118,7 +162,7 @@ private func surfaceDialAdded(
     guard let context else { return }
     let manager = Unmanaged<SurfaceDialManager>.fromOpaque(context).takeUnretainedValue()
     DispatchQueue.main.async {
-        manager.deviceAdded()
+        manager.deviceAdded(device)
     }
 }
 
