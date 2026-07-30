@@ -1,0 +1,50 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: Build release binary
+        run: swift build -c release --arch arm64
+
+      - name: Assemble app bundle
+        run: |
+          APP="dist/OrbitLauncher.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp ".build/arm64-apple-macosx/release/OrbitLauncher" "$APP/Contents/MacOS/OrbitLauncher"
+          cp "Resources/Info.plist" "$APP/Contents/Info.plist"
+          chmod +x "$APP/Contents/MacOS/OrbitLauncher"
+          codesign --force --deep --sign - "$APP"
+
+      - name: Verify app bundle
+        run: |
+          test -x "dist/OrbitLauncher.app/Contents/MacOS/OrbitLauncher"
+          plutil -lint "dist/OrbitLauncher.app/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "dist/OrbitLauncher.app"
+          file "dist/OrbitLauncher.app/Contents/MacOS/OrbitLauncher" | grep arm64
+
+      - name: Create archive
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/OrbitLauncher.app" "dist/OrbitLauncher-macOS-arm64.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbitLauncher-macOS-arm64
+          path: dist/OrbitLauncher-macOS-arm64.zip
+          if-no-files-found: error
