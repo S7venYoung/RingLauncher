@@ -7,6 +7,16 @@ struct OrbitLauncherApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
+        MenuBarExtra("OrbitLauncher", systemImage: "circle.hexagongrid") {
+            Button("显示圆环  ⌥Space") {
+                NotificationCenter.default.post(name: .toggleOrbitLauncher, object: nil)
+            }
+            Divider()
+            Button("退出 OrbitLauncher") {
+                NSApp.terminate(nil)
+            }
+        }
+
         Settings {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Orbit Launcher").font(.title2.bold())
@@ -23,6 +33,7 @@ struct OrbitLauncherApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: RingPanelController?
     private var hotKey: GlobalHotKey?
+    private var toggleObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -30,7 +41,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
             self?.controller?.toggle()
         }
+        toggleObserver = NotificationCenter.default.addObserver(
+            forName: .toggleOrbitLauncher,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.controller?.toggle()
+        }
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let toggleObserver {
+            NotificationCenter.default.removeObserver(toggleObserver)
+        }
+    }
+}
+
+extension Notification.Name {
+    static let toggleOrbitLauncher = Notification.Name("toggleOrbitLauncher")
 }
 
 final class GlobalHotKey {
@@ -111,6 +139,7 @@ final class RingPanelController {
     }
 
     private func show() {
+        NSApp.activate(ignoringOtherApps: true)
         model.reloadApps()
         model.goBack()
         model.resetSelection()

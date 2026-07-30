@@ -39,6 +39,18 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "dist/OrbitLauncher.app"
           file "dist/OrbitLauncher.app/Contents/MacOS/OrbitLauncher" | grep arm64
 
+      - name: Launch smoke test
+        run: |
+          "dist/OrbitLauncher.app/Contents/MacOS/OrbitLauncher" > /tmp/orbit-launcher.log 2>&1 &
+          APP_PID=$!
+          sleep 5
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            cat /tmp/orbit-launcher.log
+            exit 1
+          fi
+          kill "$APP_PID"
+          wait "$APP_PID" || true
+
       - name: Create archive
         run: ditto -c -k --sequesterRsrc --keepParent "dist/OrbitLauncher.app" "dist/OrbitLauncher-macOS-arm64.zip"
 

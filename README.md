@@ -8,7 +8,7 @@
 - 鼠标滚轮或编码器旋转可循环选择，方向键同样可用。
 - 编码器按下若映射为 `Return`/小键盘回车即可执行当前高亮项。
 - 点击中心、按 `Esc` 或再次按 `⌥Space` 返回/关闭。
-- 菜单栏和 Dock 中不显示常驻图标。
+- 菜单栏显示圆环图标，可用于显示圆环或退出；Dock 中不显示常驻图标。
 
 ## 在 Xcode 中运行
 
@@ -32,6 +32,19 @@
 4. 上传 `OrbitLauncher-macOS-arm64.zip` 构建产物。
 
 在仓库的 **Actions → Build macOS App → 最新运行 → Artifacts** 下载。
+
+下载后如果 macOS 提示无法验证开发者：
+
+1. 解压 ZIP。
+2. 在 Finder 中按住 Control 点击 `OrbitLauncher.app`，选择“打开”。
+3. 在再次出现的提示中选择“打开”。
+
+这是因为 Actions 产物使用临时签名而非付费的 Apple Developer ID 签名。若仍被隔离，可在终端执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/OrbitLauncher.app
+open /Applications/OrbitLauncher.app
+```
 
 ## 下一步适合补充
 
