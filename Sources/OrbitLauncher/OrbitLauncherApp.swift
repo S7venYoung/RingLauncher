@@ -430,6 +430,12 @@ final class RingPanelController {
     }
 
     private func show() {
+        // AppKit may order out a transient panel without calling hide().
+        // Remove any stale monitors before adding a new pair so one physical
+        // wheel event is never handled by multiple retained callbacks.
+        removeInputMonitors()
+        resetWheelDetector()
+
         NSApp.activate(ignoringOtherApps: true)
         model.reloadApps()
         model.goBack()
@@ -543,6 +549,11 @@ final class RingPanelController {
 
     private func hide() {
         panel.orderOut(nil)
+        removeInputMonitors()
+        resetWheelDetector()
+    }
+
+    private func removeInputMonitors() {
         if let globalInputMonitor {
             NSEvent.removeMonitor(globalInputMonitor)
             self.globalInputMonitor = nil
@@ -551,6 +562,9 @@ final class RingPanelController {
             NSEvent.removeMonitor(localInputMonitor)
             self.localInputMonitor = nil
         }
+    }
+
+    private func resetWheelDetector() {
         lastWheelEventTime = 0
         wheelBurstDirection = 0
         lastWheelMagnitude = 0
