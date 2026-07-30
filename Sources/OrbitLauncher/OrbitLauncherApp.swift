@@ -211,20 +211,20 @@ struct SettingsView: View {
                     in: 1...30
                 )
                 HStack {
-                    Text("防抖间隔")
+                    Text("新一格判定间隔")
                     Slider(
                         value: Binding(
                             get: { Double(settings.wheelDebounceMilliseconds) },
                             set: { settings.wheelDebounceMilliseconds = Int($0) }
                         ),
-                        in: 0...600,
+                        in: 40...600,
                         step: 20
                     )
                     Text("\(settings.wheelDebounceMilliseconds) ms")
                         .monospacedDigit()
                         .frame(width: 64, alignment: .trailing)
                 }
-                Text("一格跳过多个项目时，提高脉冲数或防抖间隔。推荐从 4 个脉冲、180 ms 开始。")
+                Text("同方向连续滚轮事件只触发一次；停止超过该间隔后，才判定为下一格。推荐从 4 个脉冲、180 ms 开始。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -298,7 +298,9 @@ final class RingPanelController {
     private var globalInputMonitor: Any?
     private var localInputMonitor: Any?
     private var scrollAccumulator: CGFloat = 0
-    private var lastWheelSelectionTime: TimeInterval = 0
+    private var lastWheelEventTime: TimeInterval = 0
+    private var wheelBurstDirection = 0
+    private var wheelBurstLocked = false
 
     init() {
         panel = RingPanel(
@@ -366,29 +368,39 @@ final class RingPanelController {
             let delta = abs(vertical) >= abs(horizontal) ? vertical : horizontal
             guard delta != 0 else { return false }
 
-            let normalizedDelta: CGFloat
-            if event.hasPreciseScrollingDeltas {
-                normalizedDelta = delta
-            } else {
-                normalizedDelta = delta > 0 ? 1 : -1
-            }
+            let now = Date.timeIntervalSinceReferenceDate
+            let direction = delta > 0 ? 1 : -1
+            let idleThreshold = max(
+                0.04,
+                Double(AppSettings.shared.wheelDebounceMilliseconds) / 1_000
+            )
+            let startedNewBurst =
+                now - lastWheelEventTime >= idleThreshold ||
+                direction != wheelBurstDirection
 
-            scrollAccumulator += normalizedDelta
+            if startedNewBurst {
+                scrollAccumulator = 0
+                wheelBurstLocked = false
+                wheelBurstDirection = direction
+            }
+            lastWheelEventTime = now
+
+            // One encoder detent can produce a long momentum tail. Once this
+            // burst selects an item, consume the remaining events silently.
+            guard !wheelBurstLocked else { return true }
+            guard event.momentumPhase.isEmpty else { return true }
+
+            // Count input events rather than accelerated delta magnitude.
+            // A delta of 13 is one pulse, not thirteen selections.
+            scrollAccumulator += CGFloat(direction)
             let threshold = CGFloat(AppSettings.shared.wheelPulsesPerStep)
             guard abs(scrollAccumulator) >= threshold else { return true }
 
-            let now = Date.timeIntervalSinceReferenceDate
-            let debounce = Double(AppSettings.shared.wheelDebounceMilliseconds) / 1_000
-            guard now - lastWheelSelectionTime >= debounce else {
-                scrollAccumulator = 0
-                return true
-            }
-
             let step = scrollAccumulator > 0 ? -1 : 1
             model.moveSelection(by: step)
-            lastWheelSelectionTime = now
+            wheelBurstLocked = true
             logger.notice(
-                "Wheel source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) pulses=\(self.settingsPulseCount, privacy: .public) debounceMs=\(self.settingsDebounce, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
+                "Wheel burst source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) pulses=\(self.settingsPulseCount, privacy: .public) idleMs=\(self.settingsDebounce, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
             )
             scrollAccumulator = 0
             return true
@@ -423,7 +435,9 @@ final class RingPanelController {
             self.localInputMonitor = nil
         }
         scrollAccumulator = 0
-        lastWheelSelectionTime = 0
+        lastWheelEventTime = 0
+        wheelBurstDirection = 0
+        wheelBurstLocked = false
     }
 
     private var settingsPulseCount: Int { AppSettings.shared.wheelPulsesPerStep }
