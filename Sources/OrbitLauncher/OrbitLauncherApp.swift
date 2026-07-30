@@ -99,8 +99,8 @@ final class AppSettings: ObservableObject {
     @Published var hotKeyModifiers: Int {
         didSet { saveShortcut() }
     }
-    @Published var wheelPulsesPerStep: Int {
-        didSet { UserDefaults.standard.set(wheelPulsesPerStep, forKey: Keys.wheelPulses) }
+    @Published var wheelStepSize: Int {
+        didSet { UserDefaults.standard.set(wheelStepSize, forKey: Keys.wheelStepSize) }
     }
     @Published var wheelDebounceMilliseconds: Int {
         didSet { UserDefaults.standard.set(wheelDebounceMilliseconds, forKey: Keys.wheelDebounce) }
@@ -109,7 +109,7 @@ final class AppSettings: ObservableObject {
     private enum Keys {
         static let hotKeyCode = "hotKeyCode"
         static let hotKeyModifiers = "hotKeyModifiers"
-        static let wheelPulses = "wheelPulsesPerStep"
+        static let wheelStepSize = "wheelStepSize"
         static let wheelDebounce = "wheelDebounceMilliseconds"
     }
 
@@ -117,8 +117,8 @@ final class AppSettings: ObservableObject {
         let defaults = UserDefaults.standard
         hotKeyCode = defaults.object(forKey: Keys.hotKeyCode) as? Int ?? kVK_Space
         hotKeyModifiers = defaults.object(forKey: Keys.hotKeyModifiers) as? Int ?? optionKey
-        wheelPulsesPerStep = defaults.object(forKey: Keys.wheelPulses) as? Int ?? 4
-        wheelDebounceMilliseconds = defaults.object(forKey: Keys.wheelDebounce) as? Int ?? 180
+        wheelStepSize = defaults.object(forKey: Keys.wheelStepSize) as? Int ?? 1
+        wheelDebounceMilliseconds = defaults.object(forKey: Keys.wheelDebounce) as? Int ?? 60
     }
 
     var shortcutText: String {
@@ -206,25 +206,25 @@ struct SettingsView: View {
 
             Section("编码器与滚轮") {
                 Stepper(
-                    "每切换一项：\(settings.wheelPulsesPerStep) 个滚轮脉冲",
-                    value: $settings.wheelPulsesPerStep,
-                    in: 1...30
+                    "每格切换：\(settings.wheelStepSize) 个项目",
+                    value: $settings.wheelStepSize,
+                    in: 1...3
                 )
                 HStack {
-                    Text("新一格判定间隔")
+                    Text("最快连续切换间隔")
                     Slider(
                         value: Binding(
                             get: { Double(settings.wheelDebounceMilliseconds) },
                             set: { settings.wheelDebounceMilliseconds = Int($0) }
                         ),
-                        in: 40...600,
-                        step: 20
+                        in: 20...300,
+                        step: 10
                     )
                     Text("\(settings.wheelDebounceMilliseconds) ms")
                         .monospacedDigit()
                         .frame(width: 64, alignment: .trailing)
                 }
-                Text("同方向连续滚轮事件只触发一次；停止超过该间隔后，才判定为下一格。推荐从 4 个脉冲、180 ms 开始。")
+                Text("应用会识别每个格位的滚轮加速峰值。推荐每格 1 个项目、连续切换间隔 60 ms。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -297,10 +297,12 @@ final class RingPanelController {
     private let panel: RingPanel
     private var globalInputMonitor: Any?
     private var localInputMonitor: Any?
-    private var scrollAccumulator: CGFloat = 0
     private var lastWheelEventTime: TimeInterval = 0
     private var wheelBurstDirection = 0
-    private var wheelBurstLocked = false
+    private var lastWheelMagnitude: CGFloat = 0
+    private var wheelPeakMagnitude: CGFloat = 0
+    private var wheelDetectorArmed = true
+    private var lastWheelSelectionTime: TimeInterval = 0
 
     init() {
         panel = RingPanel(
@@ -370,39 +372,51 @@ final class RingPanelController {
 
             let now = Date.timeIntervalSinceReferenceDate
             let direction = delta > 0 ? 1 : -1
-            let idleThreshold = max(
-                0.04,
-                Double(AppSettings.shared.wheelDebounceMilliseconds) / 1_000
-            )
-            let startedNewBurst =
-                now - lastWheelEventTime >= idleThreshold ||
+            let magnitude = abs(delta)
+            let newSequence =
+                now - lastWheelEventTime >= 0.12 ||
                 direction != wheelBurstDirection
 
-            if startedNewBurst {
-                scrollAccumulator = 0
-                wheelBurstLocked = false
+            if newSequence {
+                lastWheelMagnitude = 0
+                wheelPeakMagnitude = 0
+                wheelDetectorArmed = true
                 wheelBurstDirection = direction
             }
             lastWheelEventTime = now
 
-            // One encoder detent can produce a long momentum tail. Once this
-            // burst selects an item, consume the remaining events silently.
-            guard !wheelBurstLocked else { return true }
             guard event.momentumPhase.isEmpty else { return true }
 
-            // Count input events rather than accelerated delta magnitude.
-            // A delta of 13 is one pulse, not thirteen selections.
-            scrollAccumulator += CGFloat(direction)
-            let threshold = CGFloat(AppSettings.shared.wheelPulsesPerStep)
-            guard abs(scrollAccumulator) >= threshold else { return true }
+            wheelPeakMagnitude = max(wheelPeakMagnitude, magnitude)
 
-            let step = scrollAccumulator > 0 ? -1 : 1
-            model.moveSelection(by: step)
-            wheelBurstLocked = true
-            logger.notice(
-                "Wheel burst source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) pulses=\(self.settingsPulseCount, privacy: .public) idleMs=\(self.settingsDebounce, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
-            )
-            scrollAccumulator = 0
+            // Rearm after the current detent has fallen below roughly half of
+            // its peak. A new rising edge then represents the next detent,
+            // even when the wheel never becomes completely idle.
+            if !wheelDetectorArmed,
+               magnitude <= max(1, wheelPeakMagnitude * 0.48) {
+                wheelDetectorArmed = true
+                wheelPeakMagnitude = magnitude
+            }
+
+            let risingEdge =
+                newSequence ||
+                magnitude >= max(2, lastWheelMagnitude * 1.35)
+            let minimumInterval =
+                Double(AppSettings.shared.wheelDebounceMilliseconds) / 1_000
+
+            if wheelDetectorArmed,
+               risingEdge,
+               now - lastWheelSelectionTime >= minimumInterval {
+                let directionStep = direction > 0 ? -1 : 1
+                let step = directionStep * AppSettings.shared.wheelStepSize
+                model.moveSelection(by: step)
+                lastWheelSelectionTime = now
+                wheelDetectorArmed = false
+                logger.notice(
+                    "Wheel detent source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) intervalMs=\(self.settingsInterval, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
+                )
+            }
+            lastWheelMagnitude = magnitude
             return true
         }
 
@@ -434,14 +448,15 @@ final class RingPanelController {
             NSEvent.removeMonitor(localInputMonitor)
             self.localInputMonitor = nil
         }
-        scrollAccumulator = 0
         lastWheelEventTime = 0
         wheelBurstDirection = 0
-        wheelBurstLocked = false
+        lastWheelMagnitude = 0
+        wheelPeakMagnitude = 0
+        wheelDetectorArmed = true
+        lastWheelSelectionTime = 0
     }
 
-    private var settingsPulseCount: Int { AppSettings.shared.wheelPulsesPerStep }
-    private var settingsDebounce: Int { AppSettings.shared.wheelDebounceMilliseconds }
+    private var settingsInterval: Int { AppSettings.shared.wheelDebounceMilliseconds }
 }
 
 final class RingPanel: NSPanel {
