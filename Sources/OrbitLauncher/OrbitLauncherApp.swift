@@ -121,6 +121,9 @@ final class AppSettings: ObservableObject {
     @Published var appearance: String {
         didSet { UserDefaults.standard.set(appearance, forKey: Keys.appearance) }
     }
+    @Published var showItemNames: Bool {
+        didSet { UserDefaults.standard.set(showItemNames, forKey: Keys.showItemNames) }
+    }
     @Published private(set) var launchAtLogin: Bool
 
     private enum Keys {
@@ -133,6 +136,7 @@ final class AppSettings: ObservableObject {
         static let animations = "animationsEnabled"
         static let sound = "soundEnabled"
         static let appearance = "appearance"
+        static let showItemNames = "showItemNames"
     }
 
     private init() {
@@ -146,6 +150,7 @@ final class AppSettings: ObservableObject {
         animationsEnabled = defaults.object(forKey: Keys.animations) as? Bool ?? true
         soundEnabled = defaults.object(forKey: Keys.sound) as? Bool ?? true
         appearance = defaults.string(forKey: Keys.appearance) ?? "system"
+        showItemNames = defaults.object(forKey: Keys.showItemNames) as? Bool ?? true
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -274,6 +279,7 @@ struct SettingsView: View {
                         Text("深色").tag("dark")
                     }
                     .pickerStyle(.segmented)
+                    Toggle("显示应用与操作名称", isOn: $settings.showItemNames)
                 }
             }
             .formStyle(.grouped)
@@ -842,10 +848,13 @@ struct RingMenuView: View {
                             .frame(width: settings.iconSize, height: settings.iconSize)
                     }
                 }
-                Text(item.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .lineLimit(1)
-                    .frame(width: 100)
+                if settings.showItemNames {
+                    Text(item.title)
+                        .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                        .frame(width: 100)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
             }
             .contentShape(Rectangle())
         }
