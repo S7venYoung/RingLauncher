@@ -139,12 +139,19 @@ final class SurfaceDialManager: ObservableObject {
         }
 
         for element in elements where IOHIDElementGetType(element) == kIOHIDElementTypeFeature {
-            var value: Unmanaged<IOHIDValue>?
-            guard IOHIDDeviceGetValue(device, element, &value) == kIOReturnSuccess,
-                  let value else {
+            var value = Unmanaged<IOHIDValue>.passRetained(
+                IOHIDValueCreateWithIntegerValue(
+                    kCFAllocatorDefault,
+                    element,
+                    0,
+                    0
+                )
+            )
+            guard IOHIDDeviceGetValue(device, element, &value) == kIOReturnSuccess else {
+                value.release()
                 continue
             }
-            let candidate = Int(IOHIDValueGetIntegerValue(value.takeUnretainedValue()))
+            let candidate = Int(IOHIDValueGetIntegerValue(value.takeRetainedValue()))
             if candidate > 0 {
                 return candidate
             }
