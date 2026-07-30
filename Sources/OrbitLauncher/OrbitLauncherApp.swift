@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import IOKit.hid
 import OSLog
 import ServiceManagement
 import SwiftUI
@@ -42,11 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: GlobalHotKey?
     private var toggleObserver: NSObjectProtocol?
     private var settingsObserver: NSObjectProtocol?
+    private let surfaceDial = SurfaceDialManager.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         controller = RingPanelController()
         registerHotKey()
+        configureSurfaceDial()
         toggleObserver = NotificationCenter.default.addObserver(
             forName: .toggleOrbitLauncher,
             object: nil,
@@ -60,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.registerHotKey()
+            self?.configureSurfaceDial()
         }
     }
 
@@ -81,6 +85,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self?.controller?.toggle()
             }
+        }
+    }
+
+    private func configureSurfaceDial() {
+        surfaceDial.onRotation = { [weak self] direction in
+            self?.controller?.handleSurfaceDialRotation(direction)
+        }
+        surfaceDial.onButtonChanged = { [weak self] pressed in
+            self?.controller?.handleSurfaceDialButton(pressed: pressed)
+        }
+        if AppSettings.shared.surfaceDialEnabled {
+            surfaceDial.start()
+        } else {
+            surfaceDial.stop()
         }
     }
 }
@@ -124,6 +142,12 @@ final class AppSettings: ObservableObject {
     @Published var showItemNames: Bool {
         didSet { UserDefaults.standard.set(showItemNames, forKey: Keys.showItemNames) }
     }
+    @Published var surfaceDialEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(surfaceDialEnabled, forKey: Keys.surfaceDialEnabled)
+            NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
+        }
+    }
     @Published private(set) var launchAtLogin: Bool
 
     private enum Keys {
@@ -137,6 +161,7 @@ final class AppSettings: ObservableObject {
         static let sound = "soundEnabled"
         static let appearance = "appearance"
         static let showItemNames = "showItemNames"
+        static let surfaceDialEnabled = "surfaceDialEnabled"
     }
 
     private init() {
@@ -151,6 +176,7 @@ final class AppSettings: ObservableObject {
         soundEnabled = defaults.object(forKey: Keys.sound) as? Bool ?? true
         appearance = defaults.string(forKey: Keys.appearance) ?? "system"
         showItemNames = defaults.object(forKey: Keys.showItemNames) as? Bool ?? true
+        surfaceDialEnabled = defaults.object(forKey: Keys.surfaceDialEnabled) as? Bool ?? true
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -229,6 +255,7 @@ struct HotKeyKey: Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject private var surfaceDial = SurfaceDialManager.shared
 
     var body: some View {
         TabView {
@@ -329,6 +356,20 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Surface Dial（实验性）") {
+                    Toggle("启用原始 HID 支持", isOn: $settings.surfaceDialEnabled)
+                    HStack {
+                        Circle()
+                            .fill(surfaceDial.isConnected ? Color.green : Color.secondary.opacity(0.45))
+                            .frame(width: 8, height: 8)
+                        Text(surfaceDial.isConnected ? "Surface Dial 已连接" : "等待 Surface Dial（045E:091B）")
+                        Spacer()
+                    }
+                    Text("旋转选择；圆环打开时按下执行。设备需要先在 macOS 蓝牙设置中配对。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Text("Esc 返回上一环；回车或松开鼠标执行当前高亮项。")
                         .foregroundStyle(.secondary)
@@ -405,6 +446,8 @@ final class RingPanelController {
     private var wheelPeakMagnitude: CGFloat = 0
     private var wheelDetectorArmed = true
     private var lastWheelSelectionTime: TimeInterval = 0
+    private var dialLongPressWorkItem: DispatchWorkItem?
+    private var dialDidLongPress = false
 
     init() {
         panel = RingPanel(
@@ -427,6 +470,38 @@ final class RingPanelController {
 
     func toggle() {
         panel.isVisible ? hide() : show()
+    }
+
+    func handleSurfaceDialRotation(_ direction: Int) {
+        if !panel.isVisible {
+            show()
+        }
+        model.moveSelection(by: direction)
+        logger.notice("Surface Dial rotation direction=\(direction, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)")
+    }
+
+    func handleSurfaceDialButton(pressed: Bool) {
+        dialLongPressWorkItem?.cancel()
+
+        if pressed {
+            dialDidLongPress = false
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.dialDidLongPress = true
+                self.toggle()
+            }
+            dialLongPressWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
+            return
+        }
+
+        if dialDidLongPress {
+            dialDidLongPress = false
+        } else if panel.isVisible {
+            model.performSelected()
+        } else {
+            show()
+        }
     }
 
     private func show() {
