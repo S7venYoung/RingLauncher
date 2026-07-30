@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import OSLog
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -105,12 +106,33 @@ final class AppSettings: ObservableObject {
     @Published var wheelDebounceMilliseconds: Int {
         didSet { UserDefaults.standard.set(wheelDebounceMilliseconds, forKey: Keys.wheelDebounce) }
     }
+    @Published var ringScale: Double {
+        didSet { UserDefaults.standard.set(ringScale, forKey: Keys.ringScale) }
+    }
+    @Published var iconSize: Double {
+        didSet { UserDefaults.standard.set(iconSize, forKey: Keys.iconSize) }
+    }
+    @Published var animationsEnabled: Bool {
+        didSet { UserDefaults.standard.set(animationsEnabled, forKey: Keys.animations) }
+    }
+    @Published var soundEnabled: Bool {
+        didSet { UserDefaults.standard.set(soundEnabled, forKey: Keys.sound) }
+    }
+    @Published var appearance: String {
+        didSet { UserDefaults.standard.set(appearance, forKey: Keys.appearance) }
+    }
+    @Published private(set) var launchAtLogin: Bool
 
     private enum Keys {
         static let hotKeyCode = "hotKeyCode"
         static let hotKeyModifiers = "hotKeyModifiers"
         static let wheelStepSize = "wheelStepSize"
         static let wheelDebounce = "wheelDebounceMilliseconds"
+        static let ringScale = "ringScale"
+        static let iconSize = "iconSize"
+        static let animations = "animationsEnabled"
+        static let sound = "soundEnabled"
+        static let appearance = "appearance"
     }
 
     private init() {
@@ -119,6 +141,12 @@ final class AppSettings: ObservableObject {
         hotKeyModifiers = defaults.object(forKey: Keys.hotKeyModifiers) as? Int ?? optionKey
         wheelStepSize = defaults.object(forKey: Keys.wheelStepSize) as? Int ?? 1
         wheelDebounceMilliseconds = defaults.object(forKey: Keys.wheelDebounce) as? Int ?? 60
+        ringScale = defaults.object(forKey: Keys.ringScale) as? Double ?? 1
+        iconSize = defaults.object(forKey: Keys.iconSize) as? Double ?? 56
+        animationsEnabled = defaults.object(forKey: Keys.animations) as? Bool ?? true
+        soundEnabled = defaults.object(forKey: Keys.sound) as? Bool ?? true
+        appearance = defaults.string(forKey: Keys.appearance) ?? "system"
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     var shortcutText: String {
@@ -131,6 +159,19 @@ final class AppSettings: ObservableObject {
         UserDefaults.standard.set(hotKeyCode, forKey: Keys.hotKeyCode)
         UserDefaults.standard.set(hotKeyModifiers, forKey: Keys.hotKeyModifiers)
         NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLogin = enabled
+        } catch {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
     }
 }
 
@@ -185,58 +226,113 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
-        Form {
-            Section("启动快捷键") {
-                HStack {
-                    Picker("修饰键", selection: $settings.hotKeyModifiers) {
-                        ForEach(HotKeyModifier.options) { option in
-                            Text(option.label).tag(option.value)
-                        }
-                    }
-                    Picker("主键", selection: $settings.hotKeyCode) {
-                        ForEach(HotKeyKey.options) { key in
-                            Text(key.label).tag(key.code)
-                        }
-                    }
-                    Text(settings.shortcutText)
-                        .font(.system(.body, design: .monospaced).bold())
-                        .frame(minWidth: 70)
-                }
-            }
-
-            Section("编码器与滚轮") {
-                Stepper(
-                    "每格切换：\(settings.wheelStepSize) 个项目",
-                    value: $settings.wheelStepSize,
-                    in: 1...3
-                )
-                HStack {
-                    Text("最快连续切换间隔")
-                    Slider(
-                        value: Binding(
-                            get: { Double(settings.wheelDebounceMilliseconds) },
-                            set: { settings.wheelDebounceMilliseconds = Int($0) }
-                        ),
-                        in: 20...300,
-                        step: 10
+        TabView {
+            Form {
+                Section("应用") {
+                    Toggle(
+                        "登录时启动",
+                        isOn: Binding(
+                            get: { settings.launchAtLogin },
+                            set: { settings.setLaunchAtLogin($0) }
+                        )
                     )
-                    Text("\(settings.wheelDebounceMilliseconds) ms")
-                        .monospacedDigit()
-                        .frame(width: 64, alignment: .trailing)
+                    Text("第一环显示正在运行的应用；选择应用后进入快捷操作环。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Text("应用会识别每个格位的滚轮加速峰值。推荐每格 1 个项目、连续切换间隔 60 ms。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section {
-                Text("按 Esc 返回上一环或关闭；按回车执行当前高亮项。")
-                    .foregroundStyle(.secondary)
+                Section("操作") {
+                    Toggle("切换时播放音效", isOn: $settings.soundEnabled)
+                    Toggle("启用过渡动画", isOn: $settings.animationsEnabled)
+                }
             }
+            .formStyle(.grouped)
+            .tabItem { Label("通用", systemImage: "gearshape") }
+
+            Form {
+                Section("圆环尺寸") {
+                    HStack {
+                        Text("面板")
+                        Slider(value: $settings.ringScale, in: 0.75...1.15, step: 0.05)
+                        Text(String(format: "%.2f×", settings.ringScale))
+                            .monospacedDigit()
+                            .frame(width: 52)
+                    }
+                    HStack {
+                        Text("图标")
+                        Slider(value: $settings.iconSize, in: 40...72, step: 2)
+                        Text("\(Int(settings.iconSize)) pt")
+                            .monospacedDigit()
+                            .frame(width: 52)
+                    }
+                }
+
+                Section("外观") {
+                    Picker("配色", selection: $settings.appearance) {
+                        Text("跟随系统").tag("system")
+                        Text("浅色").tag("light")
+                        Text("深色").tag("dark")
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("外观", systemImage: "circle.lefthalf.filled") }
+
+            Form {
+                Section("启动快捷键") {
+                    HStack {
+                        Picker("修饰键", selection: $settings.hotKeyModifiers) {
+                            ForEach(HotKeyModifier.options) { option in
+                                Text(option.label).tag(option.value)
+                            }
+                        }
+                        Picker("主键", selection: $settings.hotKeyCode) {
+                            ForEach(HotKeyKey.options) { key in
+                                Text(key.label).tag(key.code)
+                            }
+                        }
+                        Text(settings.shortcutText)
+                            .font(.system(.body, design: .monospaced).bold())
+                            .frame(minWidth: 70)
+                    }
+                }
+
+                Section("编码器与滚轮") {
+                    Stepper(
+                        "每格切换：\(settings.wheelStepSize) 个项目",
+                        value: $settings.wheelStepSize,
+                        in: 1...3
+                    )
+                    HStack {
+                        Text("最快连续切换间隔")
+                        Slider(
+                            value: Binding(
+                                get: { Double(settings.wheelDebounceMilliseconds) },
+                                set: { settings.wheelDebounceMilliseconds = Int($0) }
+                            ),
+                            in: 20...300,
+                            step: 10
+                        )
+                        Text("\(settings.wheelDebounceMilliseconds) ms")
+                            .monospacedDigit()
+                            .frame(width: 64, alignment: .trailing)
+                    }
+                    Text("应用会识别每个格位的滚轮加速峰值。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Text("Esc 返回上一环；回车或松开鼠标执行当前高亮项。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("输入", systemImage: "keyboard") }
         }
-        .formStyle(.grouped)
-        .padding(16)
-        .frame(width: 520, height: 340)
+        .padding(12)
+        .frame(width: 560, height: 390)
     }
 }
 
@@ -332,6 +428,7 @@ final class RingPanelController {
         model.reloadApps()
         model.goBack()
         model.resetSelection()
+        model.presentationID = UUID()
 
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
@@ -469,6 +566,7 @@ final class RingModel: ObservableObject {
     @Published var apps: [RunningApp] = []
     @Published var selectedApp: RunningApp?
     @Published var selectedIndex = 0
+    @Published var presentationID = UUID()
     var dismiss: (() -> Void)?
 
     var items: [RingItem] {
@@ -519,6 +617,7 @@ final class RingModel: ObservableObject {
     func moveSelection(by step: Int) {
         guard !items.isEmpty else { return }
         selectedIndex = (selectedIndex + step + items.count) % items.count
+        playSelectionSound()
     }
 
     func performSelected() {
@@ -528,7 +627,20 @@ final class RingModel: ObservableObject {
 
     func select(_ id: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        guard selectedIndex != index else { return }
         selectedIndex = index
+        playSelectionSound()
+    }
+
+    func select(index: Int) {
+        guard items.indices.contains(index), selectedIndex != index else { return }
+        selectedIndex = index
+        playSelectionSound()
+    }
+
+    private func playSelectionSound() {
+        guard AppSettings.shared.soundEnabled else { return }
+        NSSound(named: "Tink")?.play()
     }
 
     private func actions(for app: RunningApp) -> [RingItem] {
@@ -605,9 +717,19 @@ struct RingItem: Identifiable {
 
 struct RingMenuView: View {
     @ObservedObject var model: RingModel
+    @ObservedObject private var settings = AppSettings.shared
+    @State private var appeared = false
 
-    private let diameter: CGFloat = 560
-    private let itemRadius: CGFloat = 210
+    private var diameter: CGFloat { 560 * settings.ringScale }
+    private var itemRadius: CGFloat { 210 * settings.ringScale }
+    private var innerDiameter: CGFloat { 174 * settings.ringScale }
+    private var preferredScheme: ColorScheme? {
+        switch settings.appearance {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -617,26 +739,84 @@ struct RingMenuView: View {
 
             Circle()
                 .fill(.ultraThinMaterial)
-                .overlay(Circle().stroke(.white.opacity(0.65), lineWidth: 1))
-                .shadow(color: .black.opacity(0.22), radius: 28, y: 12)
+                .shadow(color: .black.opacity(0.28), radius: 30, y: 14)
                 .frame(width: diameter, height: diameter)
 
+            ForEach(Array(model.items.enumerated()), id: \.element.id) { index, _ in
+                segment(index: index, count: model.items.count)
+            }
+
             Circle()
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.84))
-                .overlay(Circle().stroke(.primary.opacity(0.16), lineWidth: 1))
-                .frame(width: 174, height: 174)
+                .fill(.ultraThickMaterial)
+                .overlay(Circle().stroke(.white.opacity(0.32), lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                .frame(width: innerDiameter, height: innerDiameter)
                 .onTapGesture { model.escape() }
 
-            Text(model.centerTitle)
-                .font(.system(size: 18, weight: .semibold))
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.primary)
+            VStack(spacing: 7) {
+                Image(systemName: model.selectedApp == nil ? "circle.grid.3x3.fill" : "bolt.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(model.centerTitle)
+                    .font(.system(size: 17, weight: .semibold))
+                    .multilineTextAlignment(.center)
+                Text(model.selectedApp == nil ? "滚轮选择 · 回车确认" : "点击中心返回")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
 
             ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                 ringButton(item, index: index, count: model.items.count)
             }
         }
         .frame(width: 700, height: 700)
+        .scaleEffect(appeared ? 1 : 0.82)
+        .opacity(appeared ? 1 : 0)
+        .preferredColorScheme(preferredScheme)
+        .animation(
+            settings.animationsEnabled ? .spring(response: 0.28, dampingFraction: 0.82) : nil,
+            value: appeared
+        )
+        .animation(
+            settings.animationsEnabled ? .easeOut(duration: 0.13) : nil,
+            value: model.selectedIndex
+        )
+        .onAppear { reveal() }
+        .onChange(of: model.presentationID) { _ in reveal() }
+        .simultaneousGesture(radialSelectionGesture)
+    }
+
+    private func reveal() {
+        appeared = false
+        DispatchQueue.main.async {
+            appeared = true
+        }
+    }
+
+    private func segment(index: Int, count: Int) -> some View {
+        let slice = 360 / Double(max(count, 1))
+        let center = -90 + Double(index) * slice
+        let selected = model.selectedIndex == index
+
+        return RingSegment(
+            startAngle: .degrees(center - slice / 2),
+            endAngle: .degrees(center + slice / 2),
+            innerRatio: innerDiameter / diameter
+        )
+        .fill(
+            selected
+                ? Color.accentColor.opacity(0.30)
+                : Color.primary.opacity(index.isMultiple(of: 2) ? 0.035 : 0.018)
+        )
+        .overlay {
+            RingSegment(
+                startAngle: .degrees(center - slice / 2),
+                endAngle: .degrees(center + slice / 2),
+                innerRatio: innerDiameter / diameter
+            )
+            .stroke(.white.opacity(selected ? 0.55 : 0.16), lineWidth: selected ? 1.5 : 0.7)
+        }
+        .frame(width: diameter, height: diameter)
     }
 
     private func ringButton(_ item: RingItem, index: Int, count: Int) -> some View {
@@ -648,17 +828,18 @@ struct RingMenuView: View {
             VStack(spacing: 7) {
                 ZStack {
                     Circle()
-                        .fill(model.selectedIndex == index ? Color.accentColor.opacity(0.24) : .clear)
-                        .frame(width: 78, height: 78)
+                        .fill(model.selectedIndex == index ? Color.white.opacity(0.22) : .clear)
+                        .frame(width: settings.iconSize + 18, height: settings.iconSize + 18)
                     if let icon = item.icon {
                         Image(nsImage: icon)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 58, height: 58)
+                            .frame(width: settings.iconSize, height: settings.iconSize)
+                            .shadow(color: .black.opacity(0.22), radius: 5, y: 3)
                     } else {
                         Image(systemName: item.symbol ?? "circle")
-                            .font(.system(size: 35, weight: .medium))
-                            .frame(width: 58, height: 58)
+                            .font(.system(size: settings.iconSize * 0.58, weight: .medium))
+                            .frame(width: settings.iconSize, height: settings.iconSize)
                     }
                 }
                 Text(item.title)
@@ -673,5 +854,60 @@ struct RingMenuView: View {
             if hovering { model.select(item.id) }
         }
         .offset(x: x, y: y)
+    }
+
+    private var radialSelectionGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { value in
+                guard let index = radialIndex(at: value.location) else { return }
+                model.select(index: index)
+            }
+            .onEnded { value in
+                guard radialIndex(at: value.location) != nil else { return }
+                model.performSelected()
+            }
+    }
+
+    private func radialIndex(at location: CGPoint) -> Int? {
+        let center = CGPoint(x: 350, y: 350)
+        let dx = location.x - center.x
+        let dy = location.y - center.y
+        let radius = hypot(dx, dy)
+        guard radius >= innerDiameter / 2, radius <= diameter / 2 else { return nil }
+        guard !model.items.isEmpty else { return nil }
+
+        var angle = Double(atan2(dy, dx)) + Double.pi / 2
+        if angle < 0 { angle += 2 * Double.pi }
+        let slice = 2 * Double.pi / Double(model.items.count)
+        return min(Int(angle / slice), model.items.count - 1)
+    }
+}
+
+struct RingSegment: Shape {
+    let startAngle: Angle
+    let endAngle: Angle
+    let innerRatio: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outerRadius = min(rect.width, rect.height) / 2
+        let innerRadius = outerRadius * innerRatio
+        var path = Path()
+        path.addArc(
+            center: center,
+            radius: outerRadius,
+            startAngle: startAngle,
+            endAngle: endAngle,
+            clockwise: false
+        )
+        path.addArc(
+            center: center,
+            radius: innerRadius,
+            startAngle: endAngle,
+            endAngle: startAngle,
+            clockwise: true
+        )
+        path.closeSubpath()
+        return path
     }
 }
