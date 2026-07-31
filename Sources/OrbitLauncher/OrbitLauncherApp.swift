@@ -191,17 +191,19 @@ final class AppSettings: ObservableObject {
         secondaryActionKeyCode =
             defaults.object(forKey: Keys.secondaryActionKeyCode) as? Int ?? kVK_ANSI_Q
         secondaryAction = defaults.string(forKey: Keys.secondaryAction) ?? "closeWindow"
+        let savedLauncherGroups: [LauncherGroup]
         if let data = defaults.data(forKey: Keys.launcherGroups),
            let groups = try? JSONDecoder().decode([LauncherGroup].self, from: data),
            !groups.isEmpty {
-            launcherGroups = groups
+            savedLauncherGroups = groups
         } else {
-            launcherGroups = [
+            savedLauncherGroups = [
                 LauncherGroup(id: UUID(), name: "常用应用", apps: [])
             ]
         }
+        launcherGroups = savedLauncherGroups
         activeLauncherGroupID =
-            defaults.string(forKey: Keys.activeLauncherGroupID) ?? launcherGroups[0].id.uuidString
+            defaults.string(forKey: Keys.activeLauncherGroupID) ?? savedLauncherGroups[0].id.uuidString
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
