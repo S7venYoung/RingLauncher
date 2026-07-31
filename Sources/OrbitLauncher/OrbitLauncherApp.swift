@@ -4,6 +4,7 @@ import IOKit.hid
 import OSLog
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct OrbitLauncherApp: App {
@@ -47,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        requestAccessibilityPermissionIfNeeded()
         controller = RingPanelController()
         registerHotKey()
         configureSurfaceDial()
@@ -103,9 +105,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private func requestAccessibilityPermissionIfNeeded() {
+    guard !AXIsProcessTrusted() else { return }
+    let options = [
+        kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+    ] as CFDictionary
+    AXIsProcessTrustedWithOptions(options)
+}
+
 extension Notification.Name {
     static let toggleOrbitLauncher = Notification.Name("toggleOrbitLauncher")
     static let orbitSettingsChanged = Notification.Name("orbitSettingsChanged")
+}
+
+struct LauncherApp: Codable, Identifiable, Hashable {
+    let id: UUID
+    var name: String
+    var path: String
+}
+
+struct LauncherGroup: Codable, Identifiable, Hashable {
+    let id: UUID
+    var name: String
+    var apps: [LauncherApp]
 }
 
 @MainActor
@@ -159,6 +181,19 @@ final class AppSettings: ObservableObject {
             )
         }
     }
+    @Published var operatingMode: String {
+        didSet { UserDefaults.standard.set(operatingMode, forKey: Keys.operatingMode) }
+    }
+    @Published var secondaryActionKeyCode: Int {
+        didSet { UserDefaults.standard.set(secondaryActionKeyCode, forKey: Keys.secondaryActionKeyCode) }
+    }
+    @Published var secondaryAction: String {
+        didSet { UserDefaults.standard.set(secondaryAction, forKey: Keys.secondaryAction) }
+    }
+    @Published private(set) var launcherGroups: [LauncherGroup]
+    @Published var activeLauncherGroupID: String {
+        didSet { UserDefaults.standard.set(activeLauncherGroupID, forKey: Keys.activeLauncherGroupID) }
+    }
     @Published private(set) var launchAtLogin: Bool
 
     private enum Keys {
@@ -175,6 +210,11 @@ final class AppSettings: ObservableObject {
         static let secondRingEnabled = "secondRingEnabled"
         static let surfaceDialEnabled = "surfaceDialEnabled"
         static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
+        static let operatingMode = "operatingMode"
+        static let secondaryActionKeyCode = "secondaryActionKeyCode"
+        static let secondaryAction = "secondaryAction"
+        static let launcherGroups = "launcherGroups"
+        static let activeLauncherGroupID = "activeLauncherGroupID"
     }
 
     private init() {
@@ -193,6 +233,23 @@ final class AppSettings: ObservableObject {
         surfaceDialEnabled = defaults.object(forKey: Keys.surfaceDialEnabled) as? Bool ?? true
         surfaceDialStepsPerRotation =
             defaults.object(forKey: Keys.surfaceDialStepsPerRotation) as? Int ?? 20
+        operatingMode = defaults.string(forKey: Keys.operatingMode) ?? "switcher"
+        secondaryActionKeyCode =
+            defaults.object(forKey: Keys.secondaryActionKeyCode) as? Int ?? kVK_ANSI_Q
+        secondaryAction = defaults.string(forKey: Keys.secondaryAction) ?? "closeWindow"
+        let savedLauncherGroups: [LauncherGroup]
+        if let data = defaults.data(forKey: Keys.launcherGroups),
+           let groups = try? JSONDecoder().decode([LauncherGroup].self, from: data),
+           !groups.isEmpty {
+            savedLauncherGroups = groups
+        } else {
+            savedLauncherGroups = [
+                LauncherGroup(id: UUID(), name: "常用应用", apps: [])
+            ]
+        }
+        launcherGroups = savedLauncherGroups
+        activeLauncherGroupID =
+            defaults.string(forKey: Keys.activeLauncherGroupID) ?? savedLauncherGroups[0].id.uuidString
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -218,6 +275,78 @@ final class AppSettings: ObservableObject {
             launchAtLogin = enabled
         } catch {
             launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+
+    var activeLauncherGroup: LauncherGroup? {
+        launcherGroups.first { $0.id.uuidString == activeLauncherGroupID }
+            ?? launcherGroups.first
+    }
+
+    func addLauncherGroup() {
+        let group = LauncherGroup(
+            id: UUID(),
+            name: "应用组 \(launcherGroups.count + 1)",
+            apps: []
+        )
+        launcherGroups.append(group)
+        activeLauncherGroupID = group.id.uuidString
+        saveLauncherGroups()
+    }
+
+    func renameActiveLauncherGroup(_ name: String) {
+        guard let index = activeLauncherGroupIndex else { return }
+        launcherGroups[index].name = name
+        saveLauncherGroups()
+    }
+
+    func deleteActiveLauncherGroup() {
+        guard launcherGroups.count > 1, let index = activeLauncherGroupIndex else { return }
+        launcherGroups.remove(at: index)
+        activeLauncherGroupID = launcherGroups[0].id.uuidString
+        saveLauncherGroups()
+    }
+
+    func addApplicationsToActiveGroup() {
+        guard let index = activeLauncherGroupIndex else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择要加入圆环的应用"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.application]
+        guard panel.runModal() == .OK else { return }
+
+        let existingPaths = Set(launcherGroups[index].apps.map(\.path))
+        let newApps = panel.urls
+            .filter { !existingPaths.contains($0.path) }
+            .map {
+                LauncherApp(
+                    id: UUID(),
+                    name: FileManager.default.displayName(atPath: $0.path)
+                        .replacingOccurrences(of: ".app", with: ""),
+                    path: $0.path
+                )
+            }
+        launcherGroups[index].apps.append(contentsOf: newApps)
+        saveLauncherGroups()
+    }
+
+    func removeApplicationFromActiveGroup(_ appID: UUID) {
+        guard let index = activeLauncherGroupIndex else { return }
+        launcherGroups[index].apps.removeAll { $0.id == appID }
+        saveLauncherGroups()
+    }
+
+    private var activeLauncherGroupIndex: Int? {
+        launcherGroups.firstIndex { $0.id.uuidString == activeLauncherGroupID }
+            ?? launcherGroups.indices.first
+    }
+
+    private func saveLauncherGroups() {
+        if let data = try? JSONEncoder().encode(launcherGroups) {
+            UserDefaults.standard.set(data, forKey: Keys.launcherGroups)
         }
     }
 }
@@ -265,7 +394,8 @@ struct HotKeyKey: Identifiable {
         .init(code: kVK_F5, label: "F5"), .init(code: kVK_F6, label: "F6"),
         .init(code: kVK_F7, label: "F7"), .init(code: kVK_F8, label: "F8"),
         .init(code: kVK_F9, label: "F9"), .init(code: kVK_F10, label: "F10"),
-        .init(code: kVK_F11, label: "F11"), .init(code: kVK_F12, label: "F12")
+        .init(code: kVK_F11, label: "F11"), .init(code: kVK_F12, label: "F12"),
+        .init(code: kVK_Delete, label: "Delete")
     ]
 }
 
@@ -277,6 +407,11 @@ struct SettingsView: View {
         TabView {
             Form {
                 Section("应用") {
+                    Picker("工作模式", selection: $settings.operatingMode) {
+                        Text("应用切换器").tag("switcher")
+                        Text("环形启动器").tag("launcher")
+                    }
+                    .pickerStyle(.segmented)
                     Toggle(
                         "登录时启动",
                         isOn: Binding(
@@ -357,7 +492,7 @@ struct SettingsView: View {
 
                 Section("编码器与滚轮") {
                     Stepper(
-                        "每格切换：\(settings.wheelStepSize) 个项目",
+                        "转动：\(settings.wheelStepSize) 格切换一次",
                         value: $settings.wheelStepSize,
                         in: 1...3
                     )
@@ -376,6 +511,23 @@ struct SettingsView: View {
                             .frame(width: 64, alignment: .trailing)
                     }
                     Text("应用会识别每个格位的滚轮加速峰值。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("应用切换器辅助操作") {
+                    HStack {
+                        Picker("辅助按键", selection: $settings.secondaryActionKeyCode) {
+                            ForEach(HotKeyKey.options) { key in
+                                Text(key.label).tag(key.code)
+                            }
+                        }
+                        Picker("按下后", selection: $settings.secondaryAction) {
+                            Text("关闭当前窗口").tag("closeWindow")
+                            Text("彻底退出应用").tag("quit")
+                        }
+                    }
+                    Text("高亮应用时按辅助键执行；支持 Space、A–Z、F1–F12 和 Delete。关闭窗口需要辅助功能权限。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -407,9 +559,62 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("输入", systemImage: "keyboard") }
+
+            Form {
+                Section("应用组") {
+                    Picker("当前组", selection: $settings.activeLauncherGroupID) {
+                        ForEach(settings.launcherGroups) { group in
+                            Text(group.name).tag(group.id.uuidString)
+                        }
+                    }
+                    TextField(
+                        "组名",
+                        text: Binding(
+                            get: { settings.activeLauncherGroup?.name ?? "" },
+                            set: { settings.renameActiveLauncherGroup($0) }
+                        )
+                    )
+                    HStack {
+                        Button("新增组") { settings.addLauncherGroup() }
+                        Button("删除当前组", role: .destructive) {
+                            settings.deleteActiveLauncherGroup()
+                        }
+                        .disabled(settings.launcherGroups.count <= 1)
+                        Spacer()
+                        Button("添加应用…") {
+                            settings.addApplicationsToActiveGroup()
+                        }
+                    }
+                }
+
+                Section("组内应用") {
+                    if let apps = settings.activeLauncherGroup?.apps, !apps.isEmpty {
+                        ForEach(apps) { app in
+                            HStack {
+                                Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
+                                    .resizable()
+                                    .frame(width: 28, height: 28)
+                                Text(app.name)
+                                Spacer()
+                                Button {
+                                    settings.removeApplicationFromActiveGroup(app.id)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    } else {
+                        Text("此应用组为空，请点击“添加应用…”选择 .app。")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("启动器", systemImage: "square.grid.2x2") }
         }
         .padding(12)
-        .frame(width: 560, height: 390)
+        .frame(width: 600, height: 440)
     }
 }
 
@@ -475,7 +680,9 @@ final class RingPanelController {
     private var lastWheelMagnitude: CGFloat = 0
     private var wheelPeakMagnitude: CGFloat = 0
     private var wheelDetectorArmed = true
+    private var wheelDetentProgress = 0
     private var lastWheelSelectionTime: TimeInterval = 0
+
     init() {
         panel = RingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
@@ -506,7 +713,9 @@ final class RingPanelController {
             return
         }
         model.moveSelection(by: direction)
-        logger.notice("Surface Dial rotation direction=\(direction, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)")
+        logger.notice(
+            "Surface Dial rotation direction=\(direction, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
+        )
     }
 
     func handleSurfaceDialButton(pressed: Bool) {
@@ -519,6 +728,12 @@ final class RingPanelController {
     }
 
     private func show() {
+        // AppKit may order out a transient panel without calling hide().
+        // Remove any stale monitors before adding a new pair so one physical
+        // wheel event is never handled by multiple retained callbacks.
+        removeInputMonitors()
+        resetWheelDetector()
+
         NSApp.activate(ignoringOtherApps: true)
         model.reloadApps()
         model.goBack()
@@ -596,17 +811,26 @@ final class RingPanelController {
             let minimumInterval =
                 Double(AppSettings.shared.wheelDebounceMilliseconds) / 1_000
 
-            if wheelDetectorArmed,
-               risingEdge,
-               now - lastWheelSelectionTime >= minimumInterval {
+            if wheelDetectorArmed, risingEdge {
                 let directionStep = direction > 0 ? -1 : 1
-                let step = directionStep * AppSettings.shared.wheelStepSize
-                model.moveSelection(by: step)
-                lastWheelSelectionTime = now
+                if wheelDetentProgress != 0,
+                   (wheelDetentProgress > 0) != (directionStep > 0) {
+                    wheelDetentProgress = 0
+                }
+                wheelDetentProgress += directionStep
                 wheelDetectorArmed = false
-                logger.notice(
-                    "Wheel detent source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) intervalMs=\(self.settingsInterval, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
-                )
+
+                let detentsPerSelection = AppSettings.shared.wheelStepSize
+                if abs(wheelDetentProgress) >= detentsPerSelection,
+                   now - lastWheelSelectionTime >= minimumInterval {
+                    let step = wheelDetentProgress > 0 ? 1 : -1
+                    model.moveSelection(by: step)
+                    wheelDetentProgress = 0
+                    lastWheelSelectionTime = now
+                    logger.notice(
+                        "Wheel detent source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) intervalMs=\(self.settingsInterval, privacy: .public) detents=\(detentsPerSelection, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
+                    )
+                }
             }
             lastWheelMagnitude = magnitude
             return true
@@ -615,6 +839,9 @@ final class RingPanelController {
         switch Int(event.keyCode) {
         case kVK_Escape:
             model.escape()
+            return true
+        case AppSettings.shared.secondaryActionKeyCode:
+            model.performSecondaryAction()
             return true
         case kVK_LeftArrow, kVK_UpArrow:
             model.moveSelection(by: -1)
@@ -632,6 +859,11 @@ final class RingPanelController {
 
     private func hide() {
         panel.orderOut(nil)
+        removeInputMonitors()
+        resetWheelDetector()
+    }
+
+    private func removeInputMonitors() {
         if let globalInputMonitor {
             NSEvent.removeMonitor(globalInputMonitor)
             self.globalInputMonitor = nil
@@ -640,11 +872,15 @@ final class RingPanelController {
             NSEvent.removeMonitor(localInputMonitor)
             self.localInputMonitor = nil
         }
+    }
+
+    private func resetWheelDetector() {
         lastWheelEventTime = 0
         wheelBurstDirection = 0
         lastWheelMagnitude = 0
         wheelPeakMagnitude = 0
         wheelDetectorArmed = true
+        wheelDetentProgress = 0
         lastWheelSelectionTime = 0
     }
 
@@ -668,6 +904,9 @@ final class RingModel: ObservableObject {
         if let selectedApp {
             return actions(for: selectedApp)
         }
+        if AppSettings.shared.operatingMode == "launcher" {
+            return launcherItems()
+        }
         return apps.map { app in
             RingItem(id: app.id, title: app.name, icon: app.icon) { [weak self] in
                 self?.selectApp(app)
@@ -676,10 +915,20 @@ final class RingModel: ObservableObject {
     }
 
     var centerTitle: String {
-        selectedApp.map { "\($0.name)\n快捷操作" } ?? "应用"
+        if let selectedApp {
+            return "\(selectedApp.name)\n快捷操作"
+        }
+        if AppSettings.shared.operatingMode == "launcher" {
+            return AppSettings.shared.activeLauncherGroup?.name ?? "启动器"
+        }
+        return "应用"
     }
 
     func reloadApps() {
+        if AppSettings.shared.operatingMode == "launcher" {
+            apps = []
+            return
+        }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         apps = NSWorkspace.shared.runningApplications
             .filter {
@@ -728,6 +977,27 @@ final class RingModel: ObservableObject {
     func performSelected() {
         guard items.indices.contains(selectedIndex) else { return }
         items[selectedIndex].action()
+    }
+
+    func performSecondaryAction() {
+        guard AppSettings.shared.operatingMode == "switcher",
+              selectedApp == nil,
+              apps.indices.contains(selectedIndex) else {
+            return
+        }
+        let app = apps[selectedIndex]
+        if AppSettings.shared.secondaryAction == "quit" {
+            app.application.terminate()
+            dismiss?()
+        } else {
+            app.application.activate(options: [.activateAllWindows])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                if !closeFocusedWindow(of: app.application.processIdentifier) {
+                    postCommandW()
+                }
+                self?.dismiss?()
+            }
+        }
     }
 
     func select(_ id: String) {
@@ -788,6 +1058,80 @@ final class RingModel: ObservableObject {
         ) { [weak self] in self?.goBack() }
         return [activate, windows, hide, quit, back]
     }
+
+    private func launcherItems() -> [RingItem] {
+        let group = AppSettings.shared.activeLauncherGroup
+        return (group?.apps ?? []).map { app in
+            RingItem(
+                id: app.id.uuidString,
+                title: app.name,
+                icon: NSWorkspace.shared.icon(forFile: app.path)
+            ) { [weak self] in
+                let url = URL(fileURLWithPath: app.path)
+                let configuration = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.openApplication(
+                    at: url,
+                    configuration: configuration,
+                    completionHandler: nil
+                )
+                self?.dismiss?()
+            }
+        }
+    }
+}
+
+private func postCommandW() {
+    guard let source = CGEventSource(stateID: .hidSystemState),
+          let keyDown = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: CGKeyCode(kVK_ANSI_W),
+            keyDown: true
+          ),
+          let keyUp = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: CGKeyCode(kVK_ANSI_W),
+            keyDown: false
+          ) else {
+        return
+    }
+    keyDown.flags = .maskCommand
+    keyUp.flags = .maskCommand
+    keyDown.post(tap: .cghidEventTap)
+    keyUp.post(tap: .cghidEventTap)
+}
+
+private func closeFocusedWindow(of processIdentifier: pid_t) -> Bool {
+    let applicationElement = AXUIElementCreateApplication(processIdentifier)
+    var focusedWindowValue: CFTypeRef?
+    let focusedWindowResult = AXUIElementCopyAttributeValue(
+        applicationElement,
+        kAXFocusedWindowAttribute as CFString,
+        &focusedWindowValue
+    )
+    guard focusedWindowResult == .success,
+          let focusedWindowValue,
+          CFGetTypeID(focusedWindowValue) == AXUIElementGetTypeID() else {
+        return false
+    }
+    let focusedWindow = unsafeBitCast(focusedWindowValue, to: AXUIElement.self)
+
+    var closeButtonValue: CFTypeRef?
+    let closeButtonResult = AXUIElementCopyAttributeValue(
+        focusedWindow,
+        kAXCloseButtonAttribute as CFString,
+        &closeButtonValue
+    )
+    guard closeButtonResult == .success,
+          let closeButtonValue,
+          CFGetTypeID(closeButtonValue) == AXUIElementGetTypeID() else {
+        return false
+    }
+    let closeButton = unsafeBitCast(closeButtonValue, to: AXUIElement.self)
+
+    return AXUIElementPerformAction(
+        closeButton,
+        kAXPressAction as CFString
+    ) == .success
 }
 
 struct RunningApp: Identifiable {

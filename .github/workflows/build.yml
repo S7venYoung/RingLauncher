@@ -2,12 +2,12 @@ name: Build macOS App
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -29,6 +29,7 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp ".build/arm64-apple-macosx/release/OrbitLauncher" "$APP/Contents/MacOS/OrbitLauncher"
           cp "Resources/Info.plist" "$APP/Contents/Info.plist"
+          cp "Resources/OrbitLauncher-icon.png" "$APP/Contents/Resources/OrbitLauncher-icon.png"
           chmod +x "$APP/Contents/MacOS/OrbitLauncher"
           codesign --force --deep --sign - "$APP"
 
@@ -60,3 +61,14 @@ jobs:
           name: OrbitLauncher-macOS-arm64
           path: dist/OrbitLauncher-macOS-arm64.zip
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main' && github.event.head_commit.message == 'Prepare v0.2.0 release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.0
+          name: OrbitLauncher v0.2.0
+          target_commitish: ${{ github.sha }}
+          body_path: RELEASE_NOTES.md
+          files: dist/OrbitLauncher-macOS-arm64.zip
+          fail_on_unmatched_files: true
