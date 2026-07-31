@@ -305,19 +305,6 @@ final class AppSettings: ObservableObject {
     }
 }
 
-struct SecondaryActionKey: Identifiable {
-    let code: Int
-    let label: String
-    var id: Int { code }
-
-    static let options: [SecondaryActionKey] = [
-        .init(code: kVK_ANSI_Q, label: "Q"),
-        .init(code: kVK_ANSI_W, label: "W"),
-        .init(code: kVK_ANSI_X, label: "X"),
-        .init(code: kVK_Delete, label: "Delete")
-    ]
-}
-
 struct HotKeyModifier: Identifiable {
     let value: Int
     let label: String
@@ -361,7 +348,8 @@ struct HotKeyKey: Identifiable {
         .init(code: kVK_F5, label: "F5"), .init(code: kVK_F6, label: "F6"),
         .init(code: kVK_F7, label: "F7"), .init(code: kVK_F8, label: "F8"),
         .init(code: kVK_F9, label: "F9"), .init(code: kVK_F10, label: "F10"),
-        .init(code: kVK_F11, label: "F11"), .init(code: kVK_F12, label: "F12")
+        .init(code: kVK_F11, label: "F11"), .init(code: kVK_F12, label: "F12"),
+        .init(code: kVK_Delete, label: "Delete")
     ]
 }
 
@@ -483,7 +471,7 @@ struct SettingsView: View {
                 Section("应用切换器辅助操作") {
                     HStack {
                         Picker("辅助按键", selection: $settings.secondaryActionKeyCode) {
-                            ForEach(SecondaryActionKey.options) { key in
+                            ForEach(HotKeyKey.options) { key in
                                 Text(key.label).tag(key.code)
                             }
                         }
@@ -492,7 +480,7 @@ struct SettingsView: View {
                             Text("彻底退出应用").tag("quit")
                         }
                     }
-                    Text("高亮应用时按辅助键执行。关闭窗口需要辅助功能权限。")
+                    Text("高亮应用时按辅助键执行；支持 Space、A–Z、F1–F12 和 Delete。关闭窗口需要辅助功能权限。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -915,8 +903,11 @@ final class RingModel: ObservableObject {
             dismiss?()
         } else {
             app.application.activate(options: [.activateAllWindows])
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                postCommandW()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                if !closeFocusedWindow(of: app.application.processIdentifier) {
+                    postCommandW()
+                }
+                self?.dismiss?()
             }
         }
     }
@@ -1019,6 +1010,36 @@ private func postCommandW() {
     keyUp.flags = .maskCommand
     keyDown.post(tap: .cghidEventTap)
     keyUp.post(tap: .cghidEventTap)
+}
+
+private func closeFocusedWindow(of processIdentifier: pid_t) -> Bool {
+    let applicationElement = AXUIElementCreateApplication(processIdentifier)
+    var focusedWindowValue: CFTypeRef?
+    let focusedWindowResult = AXUIElementCopyAttributeValue(
+        applicationElement,
+        kAXFocusedWindowAttribute as CFString,
+        &focusedWindowValue
+    )
+    guard focusedWindowResult == .success,
+          let focusedWindow = focusedWindowValue as? AXUIElement else {
+        return false
+    }
+
+    var closeButtonValue: CFTypeRef?
+    let closeButtonResult = AXUIElementCopyAttributeValue(
+        focusedWindow,
+        kAXCloseButtonAttribute as CFString,
+        &closeButtonValue
+    )
+    guard closeButtonResult == .success,
+          let closeButton = closeButtonValue as? AXUIElement else {
+        return false
+    }
+
+    return AXUIElementPerformAction(
+        closeButton,
+        kAXPressAction as CFString
+    ) == .success
 }
 
 struct RunningApp: Identifiable {
