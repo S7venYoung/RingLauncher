@@ -963,7 +963,7 @@ final class RingModel: ObservableObject {
             selectedApp = app
             selectedIndex = 0
         } else {
-            app.application.activate(options: [.activateAllWindows])
+            activateAndRestoreWindows(app.application)
             dismiss?()
         }
     }
@@ -1024,7 +1024,7 @@ final class RingModel: ObservableObject {
             title: "切换当前窗口",
             symbol: "arrow.up.forward.app"
         ) { [weak self] in
-            app.application.activate(options: [.activateAllWindows])
+            activateAndRestoreWindows(app.application)
             self?.dismiss?()
         }
         let hide = RingItem(
@@ -1048,7 +1048,7 @@ final class RingModel: ObservableObject {
             title: "所有窗口",
             symbol: "rectangle.stack"
         ) { [weak self] in
-            app.application.activate(options: [.activateAllWindows])
+            activateAndRestoreWindows(app.application)
             self?.dismiss?()
         }
         let back = RingItem(
@@ -1098,6 +1098,72 @@ private func postCommandW() {
     keyUp.flags = .maskCommand
     keyDown.post(tap: .cghidEventTap)
     keyUp.post(tap: .cghidEventTap)
+}
+
+private func activateAndRestoreWindows(_ application: NSRunningApplication) {
+    application.unhide()
+    application.activate(options: [.activateAllWindows])
+
+    let processIdentifier = application.processIdentifier
+    restoreMinimizedWindows(of: processIdentifier)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+        restoreMinimizedWindows(of: processIdentifier)
+    }
+}
+
+private func restoreMinimizedWindows(of processIdentifier: pid_t) {
+    let applicationElement = AXUIElementCreateApplication(processIdentifier)
+    var windowsValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+        applicationElement,
+        kAXWindowsAttribute as CFString,
+        &windowsValue
+    ) == .success,
+    let windowsValue,
+    CFGetTypeID(windowsValue) == CFArrayGetTypeID() else {
+        return
+    }
+
+    let windows = unsafeBitCast(windowsValue, to: CFArray.self)
+    var windowToRaise: AXUIElement?
+    for index in 0..<CFArrayGetCount(windows) {
+        let window = unsafeBitCast(
+            CFArrayGetValueAtIndex(windows, index),
+            to: AXUIElement.self
+        )
+        if windowToRaise == nil {
+            windowToRaise = window
+        }
+
+        var minimizedValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            window,
+            kAXMinimizedAttribute as CFString,
+            &minimizedValue
+        ) == .success,
+        let minimized = minimizedValue as? Bool,
+        minimized {
+            AXUIElementSetAttributeValue(
+                window,
+                kAXMinimizedAttribute as CFString,
+                kCFBooleanFalse
+            )
+            windowToRaise = window
+        }
+    }
+
+    guard let windowToRaise else { return }
+    AXUIElementSetAttributeValue(
+        windowToRaise,
+        kAXMainAttribute as CFString,
+        kCFBooleanTrue
+    )
+    AXUIElementSetAttributeValue(
+        windowToRaise,
+        kAXFocusedAttribute as CFString,
+        kCFBooleanTrue
+    )
+    AXUIElementPerformAction(windowToRaise, kAXRaiseAction as CFString)
 }
 
 private func closeFocusedWindow(of processIdentifier: pid_t) -> Bool {
