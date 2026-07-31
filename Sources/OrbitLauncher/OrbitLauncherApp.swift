@@ -142,6 +142,9 @@ final class AppSettings: ObservableObject {
     @Published var showItemNames: Bool {
         didSet { UserDefaults.standard.set(showItemNames, forKey: Keys.showItemNames) }
     }
+    @Published var secondRingEnabled: Bool {
+        didSet { UserDefaults.standard.set(secondRingEnabled, forKey: Keys.secondRingEnabled) }
+    }
     @Published var surfaceDialEnabled: Bool {
         didSet {
             UserDefaults.standard.set(surfaceDialEnabled, forKey: Keys.surfaceDialEnabled)
@@ -169,6 +172,7 @@ final class AppSettings: ObservableObject {
         static let sound = "soundEnabled"
         static let appearance = "appearance"
         static let showItemNames = "showItemNames"
+        static let secondRingEnabled = "secondRingEnabled"
         static let surfaceDialEnabled = "surfaceDialEnabled"
         static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
     }
@@ -185,6 +189,7 @@ final class AppSettings: ObservableObject {
         soundEnabled = defaults.object(forKey: Keys.sound) as? Bool ?? true
         appearance = defaults.string(forKey: Keys.appearance) ?? "system"
         showItemNames = defaults.object(forKey: Keys.showItemNames) as? Bool ?? true
+        secondRingEnabled = defaults.object(forKey: Keys.secondRingEnabled) as? Bool ?? true
         surfaceDialEnabled = defaults.object(forKey: Keys.surfaceDialEnabled) as? Bool ?? true
         surfaceDialStepsPerRotation =
             defaults.object(forKey: Keys.surfaceDialStepsPerRotation) as? Int ?? 20
@@ -285,8 +290,16 @@ struct SettingsView: View {
                 }
 
                 Section("操作") {
+                    Toggle("启用第二层快捷操作", isOn: $settings.secondRingEnabled)
                     Toggle("切换时播放音效", isOn: $settings.soundEnabled)
                     Toggle("启用过渡动画", isOn: $settings.animationsEnabled)
+                    Text(
+                        settings.secondRingEnabled
+                            ? "确认应用后进入快捷操作环，默认选择“切换当前窗口”。"
+                            : "确认应用后直接切换或打开该应用。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -657,7 +670,7 @@ final class RingModel: ObservableObject {
         }
         return apps.map { app in
             RingItem(id: app.id, title: app.name, icon: app.icon) { [weak self] in
-                self?.selectedApp = app
+                self?.selectApp(app)
             }
         }
     }
@@ -696,6 +709,16 @@ final class RingModel: ObservableObject {
         selectedIndex = 0
     }
 
+    private func selectApp(_ app: RunningApp) {
+        if AppSettings.shared.secondRingEnabled {
+            selectedApp = app
+            selectedIndex = 0
+        } else {
+            app.application.activate(options: [.activateAllWindows])
+            dismiss?()
+        }
+    }
+
     func moveSelection(by step: Int) {
         guard !items.isEmpty else { return }
         selectedIndex = (selectedIndex + step + items.count) % items.count
@@ -728,7 +751,7 @@ final class RingModel: ObservableObject {
     private func actions(for app: RunningApp) -> [RingItem] {
         let activate = RingItem(
             id: "\(app.id)-activate",
-            title: "切换到",
+            title: "切换当前窗口",
             symbol: "arrow.up.forward.app"
         ) { [weak self] in
             app.application.activate(options: [.activateAllWindows])
