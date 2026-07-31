@@ -382,7 +382,7 @@ struct SettingsView: View {
                         Text(surfaceDial.isConnected ? "Surface Dial 已连接" : "等待 Surface Dial（045E:091B）")
                         Spacer()
                     }
-                    Text("短按呼出或执行；长按 200 ms 呼出圆环。旋转按设备分辨率换算为稳定步进。")
+                    Text("圆环隐藏时第一次旋转只负责呼出；继续旋转选择，按下立即确认。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -463,9 +463,6 @@ final class RingPanelController {
     private var wheelPeakMagnitude: CGFloat = 0
     private var wheelDetectorArmed = true
     private var lastWheelSelectionTime: TimeInterval = 0
-    private var dialLongPressWorkItem: DispatchWorkItem?
-    private var dialDidLongPress = false
-
     init() {
         panel = RingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
@@ -492,29 +489,16 @@ final class RingPanelController {
     func handleSurfaceDialRotation(_ direction: Int) {
         if !panel.isVisible {
             show()
+            logger.notice("Surface Dial rotation opened ring")
+            return
         }
         model.moveSelection(by: direction)
         logger.notice("Surface Dial rotation direction=\(direction, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)")
     }
 
     func handleSurfaceDialButton(pressed: Bool) {
-        dialLongPressWorkItem?.cancel()
-
-        if pressed {
-            dialDidLongPress = false
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.dialDidLongPress = true
-                self.toggle()
-            }
-            dialLongPressWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
-            return
-        }
-
-        if dialDidLongPress {
-            dialDidLongPress = false
-        } else if panel.isVisible {
+        guard pressed else { return }
+        if panel.isVisible {
             model.performSelected()
         } else {
             show()
