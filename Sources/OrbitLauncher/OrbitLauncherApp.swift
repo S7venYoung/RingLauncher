@@ -457,7 +457,7 @@ struct SettingsView: View {
 
                 Section("编码器与滚轮") {
                     Stepper(
-                        "每格切换：\(settings.wheelStepSize) 个项目",
+                        "转动：\(settings.wheelStepSize) 格切换一次",
                         value: $settings.wheelStepSize,
                         in: 1...3
                     )
@@ -625,6 +625,7 @@ final class RingPanelController {
     private var lastWheelMagnitude: CGFloat = 0
     private var wheelPeakMagnitude: CGFloat = 0
     private var wheelDetectorArmed = true
+    private var wheelDetentProgress = 0
     private var lastWheelSelectionTime: TimeInterval = 0
 
     init() {
@@ -734,17 +735,26 @@ final class RingPanelController {
             let minimumInterval =
                 Double(AppSettings.shared.wheelDebounceMilliseconds) / 1_000
 
-            if wheelDetectorArmed,
-               risingEdge,
-               now - lastWheelSelectionTime >= minimumInterval {
+            if wheelDetectorArmed, risingEdge {
                 let directionStep = direction > 0 ? -1 : 1
-                let step = directionStep * AppSettings.shared.wheelStepSize
-                model.moveSelection(by: step)
-                lastWheelSelectionTime = now
+                if wheelDetentProgress != 0,
+                   (wheelDetentProgress > 0) != (directionStep > 0) {
+                    wheelDetentProgress = 0
+                }
+                wheelDetentProgress += directionStep
                 wheelDetectorArmed = false
-                logger.notice(
-                    "Wheel detent source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) intervalMs=\(self.settingsInterval, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
-                )
+
+                let detentsPerSelection = AppSettings.shared.wheelStepSize
+                if abs(wheelDetentProgress) >= detentsPerSelection,
+                   now - lastWheelSelectionTime >= minimumInterval {
+                    let step = wheelDetentProgress > 0 ? 1 : -1
+                    model.moveSelection(by: step)
+                    wheelDetentProgress = 0
+                    lastWheelSelectionTime = now
+                    logger.notice(
+                        "Wheel detent source=\(source, privacy: .public) delta=\(Double(delta), privacy: .public) intervalMs=\(self.settingsInterval, privacy: .public) detents=\(detentsPerSelection, privacy: .public) step=\(step, privacy: .public) selection=\(self.model.selectedIndex, privacy: .public)"
+                    )
+                }
             }
             lastWheelMagnitude = magnitude
             return true
@@ -794,6 +804,7 @@ final class RingPanelController {
         lastWheelMagnitude = 0
         wheelPeakMagnitude = 0
         wheelDetectorArmed = true
+        wheelDetentProgress = 0
         lastWheelSelectionTime = 0
     }
 
