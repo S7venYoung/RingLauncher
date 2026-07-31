@@ -3,6 +3,7 @@ import Carbon
 import OSLog
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct OrbitLauncherApp: App {
@@ -90,6 +91,18 @@ extension Notification.Name {
     static let orbitSettingsChanged = Notification.Name("orbitSettingsChanged")
 }
 
+struct LauncherApp: Codable, Identifiable, Hashable {
+    let id: UUID
+    var name: String
+    var path: String
+}
+
+struct LauncherGroup: Codable, Identifiable, Hashable {
+    let id: UUID
+    var name: String
+    var apps: [LauncherApp]
+}
+
 @MainActor
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
@@ -127,6 +140,19 @@ final class AppSettings: ObservableObject {
     @Published var secondRingEnabled: Bool {
         didSet { UserDefaults.standard.set(secondRingEnabled, forKey: Keys.secondRingEnabled) }
     }
+    @Published var operatingMode: String {
+        didSet { UserDefaults.standard.set(operatingMode, forKey: Keys.operatingMode) }
+    }
+    @Published var secondaryActionKeyCode: Int {
+        didSet { UserDefaults.standard.set(secondaryActionKeyCode, forKey: Keys.secondaryActionKeyCode) }
+    }
+    @Published var secondaryAction: String {
+        didSet { UserDefaults.standard.set(secondaryAction, forKey: Keys.secondaryAction) }
+    }
+    @Published private(set) var launcherGroups: [LauncherGroup]
+    @Published var activeLauncherGroupID: String {
+        didSet { UserDefaults.standard.set(activeLauncherGroupID, forKey: Keys.activeLauncherGroupID) }
+    }
     @Published private(set) var launchAtLogin: Bool
 
     private enum Keys {
@@ -141,6 +167,11 @@ final class AppSettings: ObservableObject {
         static let appearance = "appearance"
         static let showItemNames = "showItemNames"
         static let secondRingEnabled = "secondRingEnabled"
+        static let operatingMode = "operatingMode"
+        static let secondaryActionKeyCode = "secondaryActionKeyCode"
+        static let secondaryAction = "secondaryAction"
+        static let launcherGroups = "launcherGroups"
+        static let activeLauncherGroupID = "activeLauncherGroupID"
     }
 
     private init() {
@@ -156,6 +187,21 @@ final class AppSettings: ObservableObject {
         appearance = defaults.string(forKey: Keys.appearance) ?? "system"
         showItemNames = defaults.object(forKey: Keys.showItemNames) as? Bool ?? true
         secondRingEnabled = defaults.object(forKey: Keys.secondRingEnabled) as? Bool ?? true
+        operatingMode = defaults.string(forKey: Keys.operatingMode) ?? "switcher"
+        secondaryActionKeyCode =
+            defaults.object(forKey: Keys.secondaryActionKeyCode) as? Int ?? kVK_ANSI_Q
+        secondaryAction = defaults.string(forKey: Keys.secondaryAction) ?? "closeWindow"
+        if let data = defaults.data(forKey: Keys.launcherGroups),
+           let groups = try? JSONDecoder().decode([LauncherGroup].self, from: data),
+           !groups.isEmpty {
+            launcherGroups = groups
+        } else {
+            launcherGroups = [
+                LauncherGroup(id: UUID(), name: "常用应用", apps: [])
+            ]
+        }
+        activeLauncherGroupID =
+            defaults.string(forKey: Keys.activeLauncherGroupID) ?? launcherGroups[0].id.uuidString
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -183,6 +229,91 @@ final class AppSettings: ObservableObject {
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
+
+    var activeLauncherGroup: LauncherGroup? {
+        launcherGroups.first { $0.id.uuidString == activeLauncherGroupID }
+            ?? launcherGroups.first
+    }
+
+    func addLauncherGroup() {
+        let group = LauncherGroup(
+            id: UUID(),
+            name: "应用组 \(launcherGroups.count + 1)",
+            apps: []
+        )
+        launcherGroups.append(group)
+        activeLauncherGroupID = group.id.uuidString
+        saveLauncherGroups()
+    }
+
+    func renameActiveLauncherGroup(_ name: String) {
+        guard let index = activeLauncherGroupIndex else { return }
+        launcherGroups[index].name = name
+        saveLauncherGroups()
+    }
+
+    func deleteActiveLauncherGroup() {
+        guard launcherGroups.count > 1, let index = activeLauncherGroupIndex else { return }
+        launcherGroups.remove(at: index)
+        activeLauncherGroupID = launcherGroups[0].id.uuidString
+        saveLauncherGroups()
+    }
+
+    func addApplicationsToActiveGroup() {
+        guard let index = activeLauncherGroupIndex else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择要加入圆环的应用"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.application]
+        guard panel.runModal() == .OK else { return }
+
+        let existingPaths = Set(launcherGroups[index].apps.map(\.path))
+        let newApps = panel.urls
+            .filter { !existingPaths.contains($0.path) }
+            .map {
+                LauncherApp(
+                    id: UUID(),
+                    name: FileManager.default.displayName(atPath: $0.path)
+                        .replacingOccurrences(of: ".app", with: ""),
+                    path: $0.path
+                )
+            }
+        launcherGroups[index].apps.append(contentsOf: newApps)
+        saveLauncherGroups()
+    }
+
+    func removeApplicationFromActiveGroup(_ appID: UUID) {
+        guard let index = activeLauncherGroupIndex else { return }
+        launcherGroups[index].apps.removeAll { $0.id == appID }
+        saveLauncherGroups()
+    }
+
+    private var activeLauncherGroupIndex: Int? {
+        launcherGroups.firstIndex { $0.id.uuidString == activeLauncherGroupID }
+            ?? launcherGroups.indices.first
+    }
+
+    private func saveLauncherGroups() {
+        if let data = try? JSONEncoder().encode(launcherGroups) {
+            UserDefaults.standard.set(data, forKey: Keys.launcherGroups)
+        }
+    }
+}
+
+struct SecondaryActionKey: Identifiable {
+    let code: Int
+    let label: String
+    var id: Int { code }
+
+    static let options: [SecondaryActionKey] = [
+        .init(code: kVK_ANSI_Q, label: "Q"),
+        .init(code: kVK_ANSI_W, label: "W"),
+        .init(code: kVK_ANSI_X, label: "X"),
+        .init(code: kVK_Delete, label: "Delete")
+    ]
 }
 
 struct HotKeyModifier: Identifiable {
@@ -239,6 +370,11 @@ struct SettingsView: View {
         TabView {
             Form {
                 Section("应用") {
+                    Picker("工作模式", selection: $settings.operatingMode) {
+                        Text("应用切换器").tag("switcher")
+                        Text("环形启动器").tag("launcher")
+                    }
+                    .pickerStyle(.segmented)
                     Toggle(
                         "登录时启动",
                         isOn: Binding(
@@ -342,6 +478,23 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("应用切换器辅助操作") {
+                    HStack {
+                        Picker("辅助按键", selection: $settings.secondaryActionKeyCode) {
+                            ForEach(SecondaryActionKey.options) { key in
+                                Text(key.label).tag(key.code)
+                            }
+                        }
+                        Picker("按下后", selection: $settings.secondaryAction) {
+                            Text("关闭当前窗口").tag("closeWindow")
+                            Text("彻底退出应用").tag("quit")
+                        }
+                    }
+                    Text("高亮应用时按辅助键执行。关闭窗口需要辅助功能权限。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Text("Esc 返回上一环；回车或松开鼠标执行当前高亮项。")
                         .foregroundStyle(.secondary)
@@ -349,9 +502,62 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("输入", systemImage: "keyboard") }
+
+            Form {
+                Section("应用组") {
+                    Picker("当前组", selection: $settings.activeLauncherGroupID) {
+                        ForEach(settings.launcherGroups) { group in
+                            Text(group.name).tag(group.id.uuidString)
+                        }
+                    }
+                    TextField(
+                        "组名",
+                        text: Binding(
+                            get: { settings.activeLauncherGroup?.name ?? "" },
+                            set: { settings.renameActiveLauncherGroup($0) }
+                        )
+                    )
+                    HStack {
+                        Button("新增组") { settings.addLauncherGroup() }
+                        Button("删除当前组", role: .destructive) {
+                            settings.deleteActiveLauncherGroup()
+                        }
+                        .disabled(settings.launcherGroups.count <= 1)
+                        Spacer()
+                        Button("添加应用…") {
+                            settings.addApplicationsToActiveGroup()
+                        }
+                    }
+                }
+
+                Section("组内应用") {
+                    if let apps = settings.activeLauncherGroup?.apps, !apps.isEmpty {
+                        ForEach(apps) { app in
+                            HStack {
+                                Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
+                                    .resizable()
+                                    .frame(width: 28, height: 28)
+                                Text(app.name)
+                                Spacer()
+                                Button {
+                                    settings.removeApplicationFromActiveGroup(app.id)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    } else {
+                        Text("此应用组为空，请点击“添加应用…”选择 .app。")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("启动器", systemImage: "square.grid.2x2") }
         }
         .padding(12)
-        .frame(width: 560, height: 390)
+        .frame(width: 600, height: 440)
     }
 }
 
@@ -546,6 +752,9 @@ final class RingPanelController {
         case kVK_Escape:
             model.escape()
             return true
+        case AppSettings.shared.secondaryActionKeyCode:
+            model.performSecondaryAction()
+            return true
         case kVK_LeftArrow, kVK_UpArrow:
             model.moveSelection(by: -1)
             return true
@@ -606,6 +815,9 @@ final class RingModel: ObservableObject {
         if let selectedApp {
             return actions(for: selectedApp)
         }
+        if AppSettings.shared.operatingMode == "launcher" {
+            return launcherItems()
+        }
         return apps.map { app in
             RingItem(id: app.id, title: app.name, icon: app.icon) { [weak self] in
                 self?.selectApp(app)
@@ -614,10 +826,20 @@ final class RingModel: ObservableObject {
     }
 
     var centerTitle: String {
-        selectedApp.map { "\($0.name)\n快捷操作" } ?? "应用"
+        if let selectedApp {
+            return "\(selectedApp.name)\n快捷操作"
+        }
+        if AppSettings.shared.operatingMode == "launcher" {
+            return AppSettings.shared.activeLauncherGroup?.name ?? "启动器"
+        }
+        return "应用"
     }
 
     func reloadApps() {
+        if AppSettings.shared.operatingMode == "launcher" {
+            apps = []
+            return
+        }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         apps = NSWorkspace.shared.runningApplications
             .filter {
@@ -666,6 +888,24 @@ final class RingModel: ObservableObject {
     func performSelected() {
         guard items.indices.contains(selectedIndex) else { return }
         items[selectedIndex].action()
+    }
+
+    func performSecondaryAction() {
+        guard AppSettings.shared.operatingMode == "switcher",
+              selectedApp == nil,
+              apps.indices.contains(selectedIndex) else {
+            return
+        }
+        let app = apps[selectedIndex]
+        if AppSettings.shared.secondaryAction == "quit" {
+            app.application.terminate()
+            dismiss?()
+        } else {
+            app.application.activate(options: [.activateAllWindows])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                postCommandW()
+            }
+        }
     }
 
     func select(_ id: String) {
@@ -726,6 +966,46 @@ final class RingModel: ObservableObject {
         ) { [weak self] in self?.goBack() }
         return [activate, windows, hide, quit, back]
     }
+
+    private func launcherItems() -> [RingItem] {
+        let group = AppSettings.shared.activeLauncherGroup
+        return (group?.apps ?? []).map { app in
+            RingItem(
+                id: app.id.uuidString,
+                title: app.name,
+                icon: NSWorkspace.shared.icon(forFile: app.path)
+            ) { [weak self] in
+                let url = URL(fileURLWithPath: app.path)
+                let configuration = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.openApplication(
+                    at: url,
+                    configuration: configuration,
+                    completionHandler: nil
+                )
+                self?.dismiss?()
+            }
+        }
+    }
+}
+
+private func postCommandW() {
+    guard let source = CGEventSource(stateID: .hidSystemState),
+          let keyDown = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: CGKeyCode(kVK_ANSI_W),
+            keyDown: true
+          ),
+          let keyUp = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: CGKeyCode(kVK_ANSI_W),
+            keyDown: false
+          ) else {
+        return
+    }
+    keyDown.flags = .maskCommand
+    keyUp.flags = .maskCommand
+    keyDown.post(tap: .cghidEventTap)
+    keyUp.post(tap: .cghidEventTap)
 }
 
 struct RunningApp: Identifiable {

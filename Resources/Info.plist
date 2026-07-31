@@ -4,8 +4,10 @@
 <dict>
     <key>CFBundleDisplayName</key>
     <string>OrbitLauncher</string>
-    <key>CFBundleExecutable</key>
-    <string>OrbitLauncher</string>
+	<key>CFBundleExecutable</key>
+	<string>OrbitLauncher</string>
+	<key>CFBundleIconFile</key>
+	<string>OrbitLauncher-icon.png</string>
     <key>CFBundleIdentifier</key>
     <string>com.s7venyoung.orbitlauncher</string>
     <key>CFBundleInfoDictionaryVersion</key>
