@@ -1030,9 +1030,11 @@ private func closeFocusedWindow(of processIdentifier: pid_t) -> Bool {
         &focusedWindowValue
     )
     guard focusedWindowResult == .success,
-          let focusedWindow = focusedWindowValue as? AXUIElement else {
+          let focusedWindowValue,
+          CFGetTypeID(focusedWindowValue) == AXUIElementGetTypeID() else {
         return false
     }
+    let focusedWindow = unsafeBitCast(focusedWindowValue, to: AXUIElement.self)
 
     var closeButtonValue: CFTypeRef?
     let closeButtonResult = AXUIElementCopyAttributeValue(
@@ -1041,9 +1043,11 @@ private func closeFocusedWindow(of processIdentifier: pid_t) -> Bool {
         &closeButtonValue
     )
     guard closeButtonResult == .success,
-          let closeButton = closeButtonValue as? AXUIElement else {
+          let closeButtonValue,
+          CFGetTypeID(closeButtonValue) == AXUIElementGetTypeID() else {
         return false
     }
+    let closeButton = unsafeBitCast(closeButtonValue, to: AXUIElement.self)
 
     return AXUIElementPerformAction(
         closeButton,
