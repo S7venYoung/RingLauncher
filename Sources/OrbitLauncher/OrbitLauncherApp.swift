@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        requestAccessibilityPermissionIfNeeded()
         controller = RingPanelController()
         registerHotKey()
         toggleObserver = NotificationCenter.default.addObserver(
@@ -84,6 +85,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+}
+
+private func requestAccessibilityPermissionIfNeeded() {
+    guard !AXIsProcessTrusted() else { return }
+    let options = [
+        kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+    ] as CFDictionary
+    AXIsProcessTrustedWithOptions(options)
 }
 
 extension Notification.Name {
