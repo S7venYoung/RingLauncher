@@ -91,13 +91,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureSurfaceDial() {
+        let settings = AppSettings.shared
         surfaceDial.onRotation = { [weak self] direction in
             self?.controller?.handleSurfaceDialRotation(direction)
         }
         surfaceDial.onButtonChanged = { [weak self] pressed in
             self?.controller?.handleSurfaceDialButton(pressed: pressed)
         }
-        if AppSettings.shared.surfaceDialEnabled {
+        surfaceDial.setHapticsEnabled(settings.surfaceDialHapticsEnabled)
+        if settings.surfaceDialEnabled {
             surfaceDial.start()
         } else {
             surfaceDial.stop()
@@ -179,6 +181,16 @@ final class AppSettings: ObservableObject {
                 surfaceDialStepsPerRotation,
                 forKey: Keys.surfaceDialStepsPerRotation
             )
+            NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
+        }
+    }
+    @Published var surfaceDialHapticsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialHapticsEnabled,
+                forKey: Keys.surfaceDialHapticsEnabled
+            )
+            NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
         }
     }
     @Published var operatingMode: String {
@@ -210,6 +222,7 @@ final class AppSettings: ObservableObject {
         static let secondRingEnabled = "secondRingEnabled"
         static let surfaceDialEnabled = "surfaceDialEnabled"
         static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
+        static let surfaceDialHapticsEnabled = "surfaceDialHapticsEnabled"
         static let operatingMode = "operatingMode"
         static let secondaryActionKeyCode = "secondaryActionKeyCode"
         static let secondaryAction = "secondaryAction"
@@ -233,6 +246,8 @@ final class AppSettings: ObservableObject {
         surfaceDialEnabled = defaults.object(forKey: Keys.surfaceDialEnabled) as? Bool ?? true
         surfaceDialStepsPerRotation =
             defaults.object(forKey: Keys.surfaceDialStepsPerRotation) as? Int ?? 20
+        surfaceDialHapticsEnabled =
+            defaults.object(forKey: Keys.surfaceDialHapticsEnabled) as? Bool ?? true
         operatingMode = defaults.string(forKey: Keys.operatingMode) ?? "switcher"
         secondaryActionKeyCode =
             defaults.object(forKey: Keys.secondaryActionKeyCode) as? Int ?? kVK_ANSI_Q
@@ -534,6 +549,8 @@ struct SettingsView: View {
 
                 Section("Surface Dial（实验性）") {
                     Toggle("启用原始 HID 支持", isOn: $settings.surfaceDialEnabled)
+                    Toggle("启用触觉反馈", isOn: $settings.surfaceDialHapticsEnabled)
+                        .disabled(!settings.surfaceDialEnabled)
                     Stepper(
                         "每圈步数：\(settings.surfaceDialStepsPerRotation)",
                         value: $settings.surfaceDialStepsPerRotation,
@@ -548,6 +565,9 @@ struct SettingsView: View {
                         Spacer()
                     }
                     Text("圆环隐藏时第一次旋转只负责呼出；继续旋转选择，按下立即确认。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("触觉反馈开启后，Dial 会按每圈步数产生对应的物理刻度震动。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

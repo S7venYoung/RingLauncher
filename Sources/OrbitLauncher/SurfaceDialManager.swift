@@ -20,7 +20,9 @@ final class SurfaceDialManager: ObservableObject {
         category: "SurfaceDial"
     )
     private var manager: IOHIDManager?
+    private var device: IOHIDDevice?
     private var running = false
+    private var hapticsEnabled = true
     private var lastButtonPressed = false
     private var tickAccumulator = 0
 
@@ -65,6 +67,7 @@ final class SurfaceDialManager: ObservableObject {
         )
         IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         self.manager = nil
+        device = nil
         running = false
         isConnected = false
         resolution = 360
@@ -72,19 +75,58 @@ final class SurfaceDialManager: ObservableObject {
         tickAccumulator = 0
     }
 
+    func setHapticsEnabled(_ enabled: Bool) {
+        hapticsEnabled = enabled
+        guard let device else { return }
+        configureHaptics(on: device)
+    }
+
     fileprivate func deviceAdded(_ device: IOHIDDevice) {
+        self.device = device
         resolution = readResolution(from: device) ?? 360
         tickAccumulator = 0
         isConnected = true
+        configureHaptics(on: device)
         logger.notice("Surface Dial connected resolution=\(self.resolution, privacy: .public) ticks/rev")
     }
 
-    fileprivate func deviceRemoved() {
+    fileprivate func deviceRemoved(_ removedDevice: IOHIDDevice) {
+        guard let device, CFEqual(device, removedDevice) else { return }
+        device = nil
         isConnected = false
         resolution = 360
         lastButtonPressed = false
         tickAccumulator = 0
         logger.notice("Surface Dial disconnected")
+    }
+
+    private func configureHaptics(on device: IOHIDDevice) {
+        let steps = max(1, min(AppSettings.shared.surfaceDialStepsPerRotation, Int(UInt16.max)))
+        var report: [UInt8] = [
+            UInt8(steps & 0xFF),
+            UInt8((steps >> 8) & 0xFF),
+            0x00,
+            hapticsEnabled ? 0x03 : 0x02,
+            0x00,
+            0x00,
+            0x00
+        ]
+        let result = IOHIDDeviceSetReport(
+            device,
+            kIOHIDReportTypeFeature,
+            CFIndex(1),
+            &report,
+            CFIndex(report.count)
+        )
+        if result == kIOReturnSuccess {
+            logger.notice(
+                "Surface Dial haptics configured enabled=\(self.hapticsEnabled, privacy: .public) steps/rev=\(steps, privacy: .public)"
+            )
+        } else {
+            logger.error(
+                "Surface Dial haptics configuration failed result=\(result, privacy: .public)"
+            )
+        }
     }
 
     fileprivate func process(reportID: UInt32, bytes: [UInt8]) {
@@ -182,7 +224,7 @@ private func surfaceDialRemoved(
     guard let context else { return }
     let manager = Unmanaged<SurfaceDialManager>.fromOpaque(context).takeUnretainedValue()
     DispatchQueue.main.async {
-        manager.deviceRemoved()
+        manager.deviceRemoved(device)
     }
 }
 
