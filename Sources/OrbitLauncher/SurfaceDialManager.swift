@@ -92,7 +92,7 @@ final class SurfaceDialManager: ObservableObject {
 
     fileprivate func deviceRemoved(_ removedDevice: IOHIDDevice) {
         guard let device, CFEqual(device, removedDevice) else { return }
-        device = nil
+        self.device = nil
         isConnected = false
         resolution = 360
         lastButtonPressed = false
