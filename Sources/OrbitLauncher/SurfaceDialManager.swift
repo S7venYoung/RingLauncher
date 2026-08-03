@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import IOKit.hid
 import OSLog
@@ -25,13 +26,68 @@ final class SurfaceDialManager: ObservableObject {
     private var hapticsEnabled = true
     private var lastButtonPressed = false
     private var tickAccumulator = 0
+    private var lastReportTime: TimeInterval = 0
+    private var wakeObserver: NSObjectProtocol?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private let idleWakeThreshold: TimeInterval = 15
 
     private init() {}
 
     func start() {
         guard !running else { return }
         running = true
+        installWakeObserver()
+        openHIDManager()
+    }
 
+    func stop() {
+        guard running else { return }
+        running = false
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
+        closeHIDManager()
+        resetDeviceState()
+    }
+
+    func setHapticsEnabled(_ enabled: Bool) {
+        hapticsEnabled = enabled
+        guard let device else { return }
+        configureHaptics(on: device)
+    }
+
+    fileprivate func deviceAdded(_ device: IOHIDDevice) {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        self.device = device
+        resolution = readResolution(from: device) ?? 360
+        tickAccumulator = 0
+        lastReportTime = Date.timeIntervalSinceReferenceDate
+        isConnected = true
+        configureHaptics(on: device)
+        logger.notice(
+            "Surface Dial connected resolution=\(self.resolution, privacy: .public) ticks/rev"
+        )
+    }
+
+    fileprivate func deviceRemoved(_ removedDevice: IOHIDDevice) {
+        guard let device, CFEqual(device, removedDevice) else { return }
+        resetDeviceState()
+        logger.notice("Surface Dial disconnected; scheduling HID recovery")
+        scheduleReconnect(after: 1.2)
+    }
+
+    fileprivate func reportFailed(_ result: IOReturn) {
+        logger.error(
+            "Surface Dial input report failed result=\(result, privacy: .public); scheduling HID recovery"
+        )
+        scheduleReconnect(after: 0.8)
+    }
+
+    private func openHIDManager() {
         let manager = IOHIDManagerCreate(
             kCFAllocatorDefault,
             IOOptionBits(kIOHIDOptionsTypeNone)
@@ -56,10 +112,13 @@ final class SurfaceDialManager: ObservableObject {
 
         let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         logger.notice("Surface Dial HID manager started result=\(result, privacy: .public)")
+        if result != kIOReturnSuccess {
+            scheduleReconnect(after: 1.5)
+        }
     }
 
-    func stop() {
-        guard running, let manager else { return }
+    private func closeHIDManager() {
+        guard let manager else { return }
         IOHIDManagerUnscheduleFromRunLoop(
             manager,
             CFRunLoopGetMain(),
@@ -67,44 +126,61 @@ final class SurfaceDialManager: ObservableObject {
         )
         IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         self.manager = nil
+    }
+
+    private func installWakeObserver() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.recoverAfterSystemWake()
+            }
+        }
+    }
+
+    private func recoverAfterSystemWake() {
+        guard running else { return }
+        tickAccumulator = 0
+        lastButtonPressed = false
+        lastReportTime = 0
+        logger.notice("Mac woke from sleep; rebuilding Surface Dial HID session")
+        scheduleReconnect(after: 0.8)
+    }
+
+    private func scheduleReconnect(after delay: TimeInterval) {
+        guard running else { return }
+        reconnectWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.restartHIDSession()
+            }
+        }
+        reconnectWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func restartHIDSession() {
+        guard running else { return }
+        reconnectWorkItem = nil
+        closeHIDManager()
+        resetDeviceState()
+        openHIDManager()
+    }
+
+    private func resetDeviceState() {
         device = nil
-        running = false
         isConnected = false
         resolution = 360
         lastButtonPressed = false
         tickAccumulator = 0
-    }
-
-    func setHapticsEnabled(_ enabled: Bool) {
-        hapticsEnabled = enabled
-        guard let device else { return }
-        configureHaptics(on: device)
-    }
-
-    fileprivate func deviceAdded(_ device: IOHIDDevice) {
-        self.device = device
-        resolution = readResolution(from: device) ?? 360
-        tickAccumulator = 0
-        isConnected = true
-        configureHaptics(on: device)
-        logger.notice("Surface Dial connected resolution=\(self.resolution, privacy: .public) ticks/rev")
-    }
-
-    fileprivate func deviceRemoved(_ removedDevice: IOHIDDevice) {
-        guard let device, CFEqual(device, removedDevice) else { return }
-        self.device = nil
-        isConnected = false
-        resolution = 360
-        lastButtonPressed = false
-        tickAccumulator = 0
-        logger.notice("Surface Dial disconnected")
+        lastReportTime = 0
     }
 
     private func configureHaptics(on device: IOHIDDevice) {
         let steps = max(1, min(AppSettings.shared.surfaceDialStepsPerRotation, Int(UInt16.max)))
-        // IOHIDDeviceSetReport requires the report ID both as its
-        // reportID argument and as the first byte when the device uses
-        // multiple reports. Surface Dial's haptic feature report is ID 1.
         var report: [UInt8] = [
             0x01,
             UInt8(steps & 0xFF),
@@ -134,14 +210,29 @@ final class SurfaceDialManager: ObservableObject {
     }
 
     fileprivate func process(reportID: UInt32, bytes: [UInt8]) {
-        // Depending on the IOKit callback, the report ID can be included in
-        // the byte buffer or supplied only through reportID.
         let payload = bytes.first == 1 && bytes.count >= 4
             ? Array(bytes.dropFirst())
             : bytes
         guard reportID == 1 || bytes.first == 1, payload.count >= 3 else {
-            logger.debug("Ignoring HID report id=\(reportID, privacy: .public) length=\(bytes.count, privacy: .public)")
+            logger.debug(
+                "Ignoring HID report id=\(reportID, privacy: .public) length=\(bytes.count, privacy: .public)"
+            )
             return
+        }
+
+        let now = Date.timeIntervalSinceReferenceDate
+        let wokeFromIdle =
+            lastReportTime > 0 &&
+            now - lastReportTime >= idleWakeThreshold
+        lastReportTime = now
+
+        if wokeFromIdle {
+            tickAccumulator = 0
+            lastButtonPressed = false
+            if let device {
+                configureHaptics(on: device)
+            }
+            logger.notice("Surface Dial woke from idle; state and haptics restored")
         }
 
         let pressed = payload[0] & 1 == 1
@@ -241,9 +332,15 @@ private func surfaceDialReport(
     report: UnsafeMutablePointer<UInt8>,
     reportLength: CFIndex
 ) {
-    guard let context, reportLength > 0 else { return }
-    let bytes = Array(UnsafeBufferPointer(start: report, count: reportLength))
+    guard let context else { return }
     let manager = Unmanaged<SurfaceDialManager>.fromOpaque(context).takeUnretainedValue()
+    guard result == kIOReturnSuccess, reportLength > 0 else {
+        DispatchQueue.main.async {
+            manager.reportFailed(result)
+        }
+        return
+    }
+    let bytes = Array(UnsafeBufferPointer(start: report, count: reportLength))
     DispatchQueue.main.async {
         manager.process(reportID: reportID, bytes: bytes)
     }
