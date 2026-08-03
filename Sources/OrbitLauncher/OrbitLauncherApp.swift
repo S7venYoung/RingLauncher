@@ -45,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toggleObserver: NSObjectProtocol?
     private var settingsObserver: NSObjectProtocol?
     private let surfaceDial = SurfaceDialManager.shared
+    private let dialLogger = Logger(
+        subsystem: "com.s7venyoung.orbitlauncher",
+        category: "DialDirectControl"
+    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -93,10 +97,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureSurfaceDial() {
         let settings = AppSettings.shared
         surfaceDial.onRotation = { [weak self] direction in
-            self?.controller?.handleSurfaceDialRotation(direction)
+            guard let self else { return }
+            if AppSettings.shared.surfaceDialControlMode == "direct" {
+                self.performDialShortcut(
+                    direction > 0 ? .clockwise : .counterClockwise
+                )
+            } else {
+                self.controller?.handleSurfaceDialRotation(direction)
+            }
         }
         surfaceDial.onButtonChanged = { [weak self] pressed in
-            self?.controller?.handleSurfaceDialButton(pressed: pressed)
+            guard let self, pressed else { return }
+            if AppSettings.shared.surfaceDialControlMode == "direct" {
+                self.performDialShortcut(.press)
+            } else {
+                self.controller?.handleSurfaceDialButton(pressed: true)
+            }
         }
         surfaceDial.setHapticsEnabled(settings.surfaceDialHapticsEnabled)
         if settings.surfaceDialEnabled {
@@ -104,6 +120,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             surfaceDial.stop()
         }
+    }
+
+    private func performDialShortcut(_ action: DialControlAction) {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        let bundleIdentifier = frontmostApplication?.bundleIdentifier
+        let profile = AppSettings.shared.dialProfile(for: bundleIdentifier)
+        let shortcut = profile.shortcut(for: action)
+        postKeyboardShortcut(shortcut)
+        dialLogger.notice(
+            "Direct Dial action=\(action.rawValue, privacy: .public) app=\(bundleIdentifier ?? "unknown", privacy: .public) profile=\(profile.name, privacy: .public)"
+        )
     }
 }
 
@@ -130,6 +157,37 @@ struct LauncherGroup: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
     var apps: [LauncherApp]
+}
+
+enum DialControlAction: String, Codable {
+    case counterClockwise
+    case clockwise
+    case press
+}
+
+struct DialShortcut: Codable, Hashable {
+    var keyCode: Int
+    var modifiers: Int
+}
+
+struct DialAppProfile: Codable, Identifiable, Hashable {
+    let id: UUID
+    var name: String
+    var bundleIdentifier: String
+    var counterClockwise: DialShortcut
+    var clockwise: DialShortcut
+    var press: DialShortcut
+
+    func shortcut(for action: DialControlAction) -> DialShortcut {
+        switch action {
+        case .counterClockwise:
+            return counterClockwise
+        case .clockwise:
+            return clockwise
+        case .press:
+            return press
+        }
+    }
 }
 
 @MainActor
@@ -193,6 +251,17 @@ final class AppSettings: ObservableObject {
             NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
         }
     }
+    @Published var surfaceDialControlMode: String {
+        didSet {
+            UserDefaults.standard.set(surfaceDialControlMode, forKey: Keys.surfaceDialControlMode)
+        }
+    }
+    @Published private(set) var dialProfiles: [DialAppProfile]
+    @Published var selectedDialProfileID: String {
+        didSet {
+            UserDefaults.standard.set(selectedDialProfileID, forKey: Keys.selectedDialProfileID)
+        }
+    }
     @Published var operatingMode: String {
         didSet { UserDefaults.standard.set(operatingMode, forKey: Keys.operatingMode) }
     }
@@ -223,6 +292,9 @@ final class AppSettings: ObservableObject {
         static let surfaceDialEnabled = "surfaceDialEnabled"
         static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
         static let surfaceDialHapticsEnabled = "surfaceDialHapticsEnabled"
+        static let surfaceDialControlMode = "surfaceDialControlMode"
+        static let dialProfiles = "dialProfiles"
+        static let selectedDialProfileID = "selectedDialProfileID"
         static let operatingMode = "operatingMode"
         static let secondaryActionKeyCode = "secondaryActionKeyCode"
         static let secondaryAction = "secondaryAction"
@@ -248,6 +320,29 @@ final class AppSettings: ObservableObject {
             defaults.object(forKey: Keys.surfaceDialStepsPerRotation) as? Int ?? 20
         surfaceDialHapticsEnabled =
             defaults.object(forKey: Keys.surfaceDialHapticsEnabled) as? Bool ?? true
+        surfaceDialControlMode =
+            defaults.string(forKey: Keys.surfaceDialControlMode) ?? "ring"
+        let savedDialProfiles: [DialAppProfile]
+        if let data = defaults.data(forKey: Keys.dialProfiles),
+           let profiles = try? JSONDecoder().decode([DialAppProfile].self, from: data),
+           !profiles.isEmpty {
+            savedDialProfiles = profiles
+        } else {
+            savedDialProfiles = [
+                DialAppProfile(
+                    id: UUID(),
+                    name: "默认配置",
+                    bundleIdentifier: "*",
+                    counterClockwise: DialShortcut(keyCode: kVK_LeftArrow, modifiers: 0),
+                    clockwise: DialShortcut(keyCode: kVK_RightArrow, modifiers: 0),
+                    press: DialShortcut(keyCode: kVK_Space, modifiers: 0)
+                )
+            ]
+        }
+        dialProfiles = savedDialProfiles
+        selectedDialProfileID =
+            defaults.string(forKey: Keys.selectedDialProfileID)
+            ?? savedDialProfiles[0].id.uuidString
         operatingMode = defaults.string(forKey: Keys.operatingMode) ?? "switcher"
         secondaryActionKeyCode =
             defaults.object(forKey: Keys.secondaryActionKeyCode) as? Int ?? kVK_ANSI_Q
@@ -290,6 +385,109 @@ final class AppSettings: ObservableObject {
             launchAtLogin = enabled
         } catch {
             launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+
+    var selectedDialProfile: DialAppProfile? {
+        dialProfiles.first { $0.id.uuidString == selectedDialProfileID }
+            ?? dialProfiles.first
+    }
+
+    func dialProfile(for bundleIdentifier: String?) -> DialAppProfile {
+        if let bundleIdentifier,
+           let profile = dialProfiles.first(where: {
+               $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+           }) {
+            return profile
+        }
+        return dialProfiles.first(where: { $0.bundleIdentifier == "*" })
+            ?? dialProfiles[0]
+    }
+
+    func dialShortcut(for action: DialControlAction) -> DialShortcut {
+        selectedDialProfile?.shortcut(for: action)
+            ?? DialShortcut(keyCode: kVK_Space, modifiers: 0)
+    }
+
+    func updateDialShortcut(
+        _ action: DialControlAction,
+        keyCode: Int? = nil,
+        modifiers: Int? = nil
+    ) {
+        guard let index = dialProfiles.firstIndex(where: {
+            $0.id.uuidString == selectedDialProfileID
+        }) else { return }
+        var shortcut = dialProfiles[index].shortcut(for: action)
+        if let keyCode {
+            shortcut.keyCode = keyCode
+        }
+        if let modifiers {
+            shortcut.modifiers = modifiers
+        }
+        switch action {
+        case .counterClockwise:
+            dialProfiles[index].counterClockwise = shortcut
+        case .clockwise:
+            dialProfiles[index].clockwise = shortcut
+        case .press:
+            dialProfiles[index].press = shortcut
+        }
+        saveDialProfiles()
+    }
+
+    func addDialApplicationProfile() {
+        let panel = NSOpenPanel()
+        panel.title = "选择要配置 Surface Dial 的应用"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.application]
+        guard panel.runModal() == .OK,
+              let url = panel.url,
+              let bundleIdentifier = Bundle(url: url)?.bundleIdentifier else {
+            return
+        }
+
+        if let existing = dialProfiles.first(where: {
+            $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+        }) {
+            selectedDialProfileID = existing.id.uuidString
+            return
+        }
+
+        let fallback = dialProfiles.first(where: { $0.bundleIdentifier == "*" })
+            ?? dialProfiles[0]
+        let profile = DialAppProfile(
+            id: UUID(),
+            name: FileManager.default.displayName(atPath: url.path)
+                .replacingOccurrences(of: ".app", with: ""),
+            bundleIdentifier: bundleIdentifier,
+            counterClockwise: fallback.counterClockwise,
+            clockwise: fallback.clockwise,
+            press: fallback.press
+        )
+        dialProfiles.append(profile)
+        selectedDialProfileID = profile.id.uuidString
+        saveDialProfiles()
+    }
+
+    func removeSelectedDialProfile() {
+        guard let index = dialProfiles.firstIndex(where: {
+            $0.id.uuidString == selectedDialProfileID
+        }), dialProfiles[index].bundleIdentifier != "*" else {
+            return
+        }
+        dialProfiles.remove(at: index)
+        selectedDialProfileID =
+            dialProfiles.first(where: { $0.bundleIdentifier == "*" })?.id.uuidString
+            ?? dialProfiles[0].id.uuidString
+        saveDialProfiles()
+    }
+
+    private func saveDialProfiles() {
+        if let data = try? JSONEncoder().encode(dialProfiles) {
+            UserDefaults.standard.set(data, forKey: Keys.dialProfiles)
         }
     }
 
@@ -371,6 +569,10 @@ struct HotKeyModifier: Identifiable {
     let label: String
     var id: Int { value }
 
+    static let directOptions: [HotKeyModifier] = [
+        .init(value: 0, label: "无")
+    ] + options
+
     static let options: [HotKeyModifier] = [
         .init(value: optionKey, label: "⌥"),
         .init(value: cmdKey, label: "⌘"),
@@ -410,7 +612,10 @@ struct HotKeyKey: Identifiable {
         .init(code: kVK_F7, label: "F7"), .init(code: kVK_F8, label: "F8"),
         .init(code: kVK_F9, label: "F9"), .init(code: kVK_F10, label: "F10"),
         .init(code: kVK_F11, label: "F11"), .init(code: kVK_F12, label: "F12"),
-        .init(code: kVK_Delete, label: "Delete")
+        .init(code: kVK_LeftArrow, label: "←"), .init(code: kVK_RightArrow, label: "→"),
+        .init(code: kVK_UpArrow, label: "↑"), .init(code: kVK_DownArrow, label: "↓"),
+        .init(code: kVK_Return, label: "Return"), .init(code: kVK_Tab, label: "Tab"),
+        .init(code: kVK_Escape, label: "Esc"), .init(code: kVK_Delete, label: "Delete")
     ]
 }
 
@@ -549,6 +754,12 @@ struct SettingsView: View {
 
                 Section("Surface Dial（实验性）") {
                     Toggle("启用原始 HID 支持", isOn: $settings.surfaceDialEnabled)
+                    Picker("操作模式", selection: $settings.surfaceDialControlMode) {
+                        Text("环形切换").tag("ring")
+                        Text("直接控制").tag("direct")
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!settings.surfaceDialEnabled)
                     Toggle("启用触觉反馈", isOn: $settings.surfaceDialHapticsEnabled)
                         .disabled(!settings.surfaceDialEnabled)
                     Stepper(
@@ -564,12 +775,67 @@ struct SettingsView: View {
                         Text(surfaceDial.isConnected ? "Surface Dial 已连接" : "等待 Surface Dial（045E:091B）")
                         Spacer()
                     }
-                    Text("圆环隐藏时第一次旋转只负责呼出；继续旋转选择，按下立即确认。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        settings.surfaceDialControlMode == "direct"
+                            ? "直接控制会根据当前前台应用发送配置的快捷键，不显示圆环。"
+                            : "圆环隐藏时第一次旋转只负责呼出；继续旋转选择，按下立即确认。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     Text("触觉反馈开启后，Dial 会按每圈步数产生对应的物理刻度震动。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                if settings.surfaceDialControlMode == "direct" {
+                    Section("Dial 直接控制") {
+                        Picker("应用配置", selection: $settings.selectedDialProfileID) {
+                            ForEach(settings.dialProfiles) { profile in
+                                Text(profile.name).tag(profile.id.uuidString)
+                            }
+                        }
+
+                        HStack {
+                            Button("添加应用…") {
+                                settings.addDialApplicationProfile()
+                            }
+                            Button("删除当前配置", role: .destructive) {
+                                settings.removeSelectedDialProfile()
+                            }
+                            .disabled(
+                                settings.selectedDialProfile?.bundleIdentifier == "*"
+                            )
+                            Spacer()
+                        }
+
+                        if let profile = settings.selectedDialProfile {
+                            LabeledContent("应用标识") {
+                                Text(profile.bundleIdentifier)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        DialShortcutRow(
+                            title: "逆时针",
+                            action: .counterClockwise,
+                            settings: settings
+                        )
+                        DialShortcutRow(
+                            title: "顺时针",
+                            action: .clockwise,
+                            settings: settings
+                        )
+                        DialShortcutRow(
+                            title: "按下",
+                            action: .press,
+                            settings: settings
+                        )
+
+                        Text("没有专属配置的应用使用“默认配置”。发送快捷键需要辅助功能权限。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section {
@@ -635,6 +901,57 @@ struct SettingsView: View {
         }
         .padding(12)
         .frame(width: 600, height: 440)
+    }
+}
+
+struct DialShortcutRow: View {
+    let title: String
+    let action: DialControlAction
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        let shortcut = settings.dialShortcut(for: action)
+        HStack {
+            Text(title)
+                .frame(width: 64, alignment: .leading)
+            Picker(
+                "修饰键",
+                selection: Binding(
+                    get: { settings.dialShortcut(for: action).modifiers },
+                    set: { settings.updateDialShortcut(action, modifiers: $0) }
+                )
+            ) {
+                ForEach(HotKeyModifier.directOptions) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .labelsHidden()
+            Picker(
+                "按键",
+                selection: Binding(
+                    get: { settings.dialShortcut(for: action).keyCode },
+                    set: { settings.updateDialShortcut(action, keyCode: $0) }
+                )
+            ) {
+                ForEach(HotKeyKey.options) { key in
+                    Text(key.label).tag(key.code)
+                }
+            }
+            .labelsHidden()
+            Text(shortcutLabel(shortcut))
+                .font(.system(.caption, design: .monospaced).bold())
+                .frame(width: 76, alignment: .trailing)
+        }
+    }
+
+    private func shortcutLabel(_ shortcut: DialShortcut) -> String {
+        let modifier = HotKeyModifier.directOptions.first {
+            $0.value == shortcut.modifiers
+        }?.label ?? ""
+        let key = HotKeyKey.options.first {
+            $0.code == shortcut.keyCode
+        }?.label ?? "?"
+        return modifier + key
     }
 }
 
@@ -1098,6 +1415,40 @@ final class RingModel: ObservableObject {
             }
         }
     }
+}
+
+private func postKeyboardShortcut(_ shortcut: DialShortcut) {
+    guard let source = CGEventSource(stateID: .hidSystemState),
+          let keyDown = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: CGKeyCode(shortcut.keyCode),
+            keyDown: true
+          ),
+          let keyUp = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: CGKeyCode(shortcut.keyCode),
+            keyDown: false
+          ) else {
+        return
+    }
+
+    var flags: CGEventFlags = []
+    if shortcut.modifiers & cmdKey != 0 {
+        flags.insert(.maskCommand)
+    }
+    if shortcut.modifiers & optionKey != 0 {
+        flags.insert(.maskAlternate)
+    }
+    if shortcut.modifiers & controlKey != 0 {
+        flags.insert(.maskControl)
+    }
+    if shortcut.modifiers & shiftKey != 0 {
+        flags.insert(.maskShift)
+    }
+    keyDown.flags = flags
+    keyUp.flags = flags
+    keyDown.post(tap: .cghidEventTap)
+    keyUp.post(tap: .cghidEventTap)
 }
 
 private func postCommandW() {
