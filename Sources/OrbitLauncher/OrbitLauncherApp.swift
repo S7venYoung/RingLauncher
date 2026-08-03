@@ -132,6 +132,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             postScrollWheel(lines: shortcut.resolvedScrollLines)
         case "scrollDown":
             postScrollWheel(lines: -shortcut.resolvedScrollLines)
+        case "volumeUp":
+            postSystemDefinedKey(0)
+        case "volumeDown":
+            postSystemDefinedKey(1)
+        case "brightnessUp":
+            postSystemDefinedKey(2)
+        case "brightnessDown":
+            postSystemDefinedKey(3)
+        case "mute":
+            postSystemDefinedKey(7)
+        case "playPause":
+            postSystemDefinedKey(16)
+        case "nextTrack":
+            postSystemDefinedKey(17)
+        case "previousTrack":
+            postSystemDefinedKey(18)
+        case "missionControl":
+            postKeyboardShortcut(
+                DialShortcut(keyCode: kVK_UpArrow, modifiers: controlKey)
+            )
+        case "appExpose":
+            postKeyboardShortcut(
+                DialShortcut(keyCode: kVK_DownArrow, modifiers: controlKey)
+            )
+        case "showDesktop":
+            postKeyboardShortcut(
+                DialShortcut(keyCode: kVK_F11, modifiers: 0)
+            )
+        case "lockScreen":
+            postKeyboardShortcut(
+                DialShortcut(
+                    keyCode: kVK_ANSI_Q,
+                    modifiers: controlKey | cmdKey
+                )
+            )
+        case "screenshot":
+            postKeyboardShortcut(
+                DialShortcut(
+                    keyCode: kVK_ANSI_5,
+                    modifiers: shiftKey | cmdKey
+                )
+            )
         default:
             postKeyboardShortcut(shortcut)
         }
@@ -960,6 +1002,19 @@ struct DialShortcutRow: View {
                     Text("快捷键").tag("shortcut")
                     Text("向上滚动").tag("scrollUp")
                     Text("向下滚动").tag("scrollDown")
+                    Text("增大音量").tag("volumeUp")
+                    Text("减小音量").tag("volumeDown")
+                    Text("静音/取消静音").tag("mute")
+                    Text("播放/暂停").tag("playPause")
+                    Text("下一首").tag("nextTrack")
+                    Text("上一首").tag("previousTrack")
+                    Text("提高亮度").tag("brightnessUp")
+                    Text("降低亮度").tag("brightnessDown")
+                    Text("Mission Control").tag("missionControl")
+                    Text("当前应用窗口").tag("appExpose")
+                    Text("显示桌面").tag("showDesktop")
+                    Text("锁定屏幕").tag("lockScreen")
+                    Text("截图工具").tag("screenshot")
                 }
                 .labelsHidden()
                 Spacer()
@@ -996,7 +1051,8 @@ struct DialShortcutRow: View {
                     }
                     .labelsHidden()
                 }
-            } else {
+            } else if shortcut.resolvedKind == "scrollUp"
+                        || shortcut.resolvedKind == "scrollDown" {
                 Stepper(
                     "每格滚动：\(shortcut.resolvedScrollLines) 行",
                     value: Binding(
@@ -1016,6 +1072,32 @@ struct DialShortcutRow: View {
             return "滚轮 ↑"
         case "scrollDown":
             return "滚轮 ↓"
+        case "volumeUp":
+            return "音量 +"
+        case "volumeDown":
+            return "音量 −"
+        case "mute":
+            return "静音"
+        case "playPause":
+            return "播放/暂停"
+        case "nextTrack":
+            return "下一首"
+        case "previousTrack":
+            return "上一首"
+        case "brightnessUp":
+            return "亮度 +"
+        case "brightnessDown":
+            return "亮度 −"
+        case "missionControl":
+            return "调度中心"
+        case "appExpose":
+            return "应用窗口"
+        case "showDesktop":
+            return "桌面"
+        case "lockScreen":
+            return "锁屏"
+        case "screenshot":
+            return "截图"
         default:
             let modifier = HotKeyModifier.directOptions.first {
                 $0.value == shortcut.modifiers
@@ -1488,6 +1570,35 @@ final class RingModel: ObservableObject {
             }
         }
     }
+}
+
+private func postSystemDefinedKey(_ keyType: Int) {
+    let keyDownValue = 0xA
+    let keyUpValue = 0xB
+    let keyDown = NSEvent.otherEvent(
+        with: .systemDefined,
+        location: .zero,
+        modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(keyDownValue << 8)),
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        subtype: 8,
+        data1: (keyType << 16) | (keyDownValue << 8),
+        data2: -1
+    )
+    let keyUp = NSEvent.otherEvent(
+        with: .systemDefined,
+        location: .zero,
+        modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(keyUpValue << 8)),
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        subtype: 8,
+        data1: (keyType << 16) | (keyUpValue << 8),
+        data2: -1
+    )
+    keyDown?.cgEvent?.post(tap: .cghidEventTap)
+    keyUp?.cgEvent?.post(tap: .cghidEventTap)
 }
 
 private func postScrollWheel(lines: Int) {
