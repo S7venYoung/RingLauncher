@@ -127,9 +127,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bundleIdentifier = frontmostApplication?.bundleIdentifier
         let profile = AppSettings.shared.dialProfile(for: bundleIdentifier)
         let shortcut = profile.shortcut(for: action)
-        postKeyboardShortcut(shortcut)
+        switch shortcut.resolvedKind {
+        case "scrollUp":
+            postScrollWheel(lines: shortcut.resolvedScrollLines)
+        case "scrollDown":
+            postScrollWheel(lines: -shortcut.resolvedScrollLines)
+        default:
+            postKeyboardShortcut(shortcut)
+        }
         dialLogger.notice(
-            "Direct Dial action=\(action.rawValue, privacy: .public) app=\(bundleIdentifier ?? "unknown", privacy: .public) profile=\(profile.name, privacy: .public)"
+            "Direct Dial action=\(action.rawValue, privacy: .public) kind=\(shortcut.resolvedKind, privacy: .public) app=\(bundleIdentifier ?? "unknown", privacy: .public) profile=\(profile.name, privacy: .public)"
         )
     }
 }
@@ -168,6 +175,16 @@ enum DialControlAction: String, Codable {
 struct DialShortcut: Codable, Hashable {
     var keyCode: Int
     var modifiers: Int
+    var kind: String? = nil
+    var scrollLines: Int? = nil
+
+    var resolvedKind: String {
+        kind ?? "shortcut"
+    }
+
+    var resolvedScrollLines: Int {
+        max(1, scrollLines ?? 3)
+    }
 }
 
 struct DialAppProfile: Codable, Identifiable, Hashable {
@@ -333,8 +350,18 @@ final class AppSettings: ObservableObject {
                     id: UUID(),
                     name: "默认配置",
                     bundleIdentifier: "*",
-                    counterClockwise: DialShortcut(keyCode: kVK_LeftArrow, modifiers: 0),
-                    clockwise: DialShortcut(keyCode: kVK_RightArrow, modifiers: 0),
+                    counterClockwise: DialShortcut(
+                        keyCode: kVK_LeftArrow,
+                        modifiers: 0,
+                        kind: "scrollUp",
+                        scrollLines: 3
+                    ),
+                    clockwise: DialShortcut(
+                        keyCode: kVK_RightArrow,
+                        modifiers: 0,
+                        kind: "scrollDown",
+                        scrollLines: 3
+                    ),
                     press: DialShortcut(keyCode: kVK_Space, modifiers: 0)
                 )
             ]
@@ -412,7 +439,9 @@ final class AppSettings: ObservableObject {
     func updateDialShortcut(
         _ action: DialControlAction,
         keyCode: Int? = nil,
-        modifiers: Int? = nil
+        modifiers: Int? = nil,
+        kind: String? = nil,
+        scrollLines: Int? = nil
     ) {
         guard let index = dialProfiles.firstIndex(where: {
             $0.id.uuidString == selectedDialProfileID
@@ -423,6 +452,12 @@ final class AppSettings: ObservableObject {
         }
         if let modifiers {
             shortcut.modifiers = modifiers
+        }
+        if let kind {
+            shortcut.kind = kind
+        }
+        if let scrollLines {
+            shortcut.scrollLines = max(1, scrollLines)
         }
         switch action {
         case .counterClockwise:
@@ -911,47 +946,85 @@ struct DialShortcutRow: View {
 
     var body: some View {
         let shortcut = settings.dialShortcut(for: action)
-        HStack {
-            Text(title)
-                .frame(width: 64, alignment: .leading)
-            Picker(
-                "修饰键",
-                selection: Binding(
-                    get: { settings.dialShortcut(for: action).modifiers },
-                    set: { settings.updateDialShortcut(action, modifiers: $0) }
-                )
-            ) {
-                ForEach(HotKeyModifier.directOptions) { option in
-                    Text(option.label).tag(option.value)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .frame(width: 64, alignment: .leading)
+                Picker(
+                    "动作类型",
+                    selection: Binding(
+                        get: { settings.dialShortcut(for: action).resolvedKind },
+                        set: { settings.updateDialShortcut(action, kind: $0) }
+                    )
+                ) {
+                    Text("快捷键").tag("shortcut")
+                    Text("向上滚动").tag("scrollUp")
+                    Text("向下滚动").tag("scrollDown")
                 }
+                .labelsHidden()
+                Spacer()
+                Text(actionLabel(shortcut))
+                    .font(.system(.caption, design: .monospaced).bold())
             }
-            .labelsHidden()
-            Picker(
-                "按键",
-                selection: Binding(
-                    get: { settings.dialShortcut(for: action).keyCode },
-                    set: { settings.updateDialShortcut(action, keyCode: $0) }
-                )
-            ) {
-                ForEach(HotKeyKey.options) { key in
-                    Text(key.label).tag(key.code)
+
+            if shortcut.resolvedKind == "shortcut" {
+                HStack {
+                    Spacer()
+                        .frame(width: 64)
+                    Picker(
+                        "修饰键",
+                        selection: Binding(
+                            get: { settings.dialShortcut(for: action).modifiers },
+                            set: { settings.updateDialShortcut(action, modifiers: $0) }
+                        )
+                    ) {
+                        ForEach(HotKeyModifier.directOptions) { option in
+                            Text(option.label).tag(option.value)
+                        }
+                    }
+                    .labelsHidden()
+                    Picker(
+                        "按键",
+                        selection: Binding(
+                            get: { settings.dialShortcut(for: action).keyCode },
+                            set: { settings.updateDialShortcut(action, keyCode: $0) }
+                        )
+                    ) {
+                        ForEach(HotKeyKey.options) { key in
+                            Text(key.label).tag(key.code)
+                        }
+                    }
+                    .labelsHidden()
                 }
+            } else {
+                Stepper(
+                    "每格滚动：\(shortcut.resolvedScrollLines) 行",
+                    value: Binding(
+                        get: { settings.dialShortcut(for: action).resolvedScrollLines },
+                        set: { settings.updateDialShortcut(action, scrollLines: $0) }
+                    ),
+                    in: 1...12
+                )
+                .padding(.leading, 64)
             }
-            .labelsHidden()
-            Text(shortcutLabel(shortcut))
-                .font(.system(.caption, design: .monospaced).bold())
-                .frame(width: 76, alignment: .trailing)
         }
     }
 
-    private func shortcutLabel(_ shortcut: DialShortcut) -> String {
-        let modifier = HotKeyModifier.directOptions.first {
-            $0.value == shortcut.modifiers
-        }?.label ?? ""
-        let key = HotKeyKey.options.first {
-            $0.code == shortcut.keyCode
-        }?.label ?? "?"
-        return modifier + key
+    private func actionLabel(_ shortcut: DialShortcut) -> String {
+        switch shortcut.resolvedKind {
+        case "scrollUp":
+            return "滚轮 ↑"
+        case "scrollDown":
+            return "滚轮 ↓"
+        default:
+            let modifier = HotKeyModifier.directOptions.first {
+                $0.value == shortcut.modifiers
+            }?.label ?? ""
+            let key = HotKeyKey.options.first {
+                $0.code == shortcut.keyCode
+            }?.label ?? "?"
+            return modifier + key
+        }
     }
 }
 
@@ -1415,6 +1488,21 @@ final class RingModel: ObservableObject {
             }
         }
     }
+}
+
+private func postScrollWheel(lines: Int) {
+    guard let source = CGEventSource(stateID: .hidSystemState),
+          let event = CGEvent(
+              scrollWheelEvent2Source: source,
+              units: .line,
+              wheelCount: 1,
+              wheel1: Int32(lines),
+              wheel2: 0,
+              wheel3: 0
+          ) else {
+        return
+    }
+    event.post(tap: .cghidEventTap)
 }
 
 private func postKeyboardShortcut(_ shortcut: DialShortcut) {
