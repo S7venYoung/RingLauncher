@@ -2,7 +2,7 @@ name: Build macOS App
 
 on:
   push:
-    branches: [main, agent/surface-dial]
+    branches: [main, agent/surface-dial, agent/dial-direct-control]
   pull_request:
   workflow_dispatch:
 
