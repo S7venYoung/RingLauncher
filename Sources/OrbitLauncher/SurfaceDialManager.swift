@@ -25,6 +25,8 @@ final class SurfaceDialManager: ObservableObject {
     private var hapticsEnabled = true
     private var lastButtonPressed = false
     private var tickAccumulator = 0
+    private var keepAliveTimer: Timer?
+    private let keepAliveInterval: TimeInterval = 120
 
     private init() {}
 
@@ -60,6 +62,7 @@ final class SurfaceDialManager: ObservableObject {
 
     func stop() {
         guard running, let manager else { return }
+        stopKeepAlive()
         IOHIDManagerUnscheduleFromRunLoop(
             manager,
             CFRunLoopGetMain(),
@@ -87,17 +90,44 @@ final class SurfaceDialManager: ObservableObject {
         tickAccumulator = 0
         isConnected = true
         configureHaptics(on: device)
+        startKeepAlive()
         logger.notice("Surface Dial connected resolution=\(self.resolution, privacy: .public) ticks/rev")
     }
 
     fileprivate func deviceRemoved(_ removedDevice: IOHIDDevice) {
         guard let device, CFEqual(device, removedDevice) else { return }
+        stopKeepAlive()
         self.device = nil
         isConnected = false
         resolution = 360
         lastButtonPressed = false
         tickAccumulator = 0
         logger.notice("Surface Dial disconnected")
+    }
+
+    private func startKeepAlive() {
+        stopKeepAlive()
+        let timer = Timer(timeInterval: keepAliveInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.sendKeepAlive()
+            }
+        }
+        keepAliveTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        logger.notice(
+            "Surface Dial keep-alive started interval=\(self.keepAliveInterval, privacy: .public)s"
+        )
+    }
+
+    private func stopKeepAlive() {
+        keepAliveTimer?.invalidate()
+        keepAliveTimer = nil
+    }
+
+    private func sendKeepAlive() {
+        guard running, isConnected, let device else { return }
+        configureHaptics(on: device)
+        logger.debug("Surface Dial keep-alive sent")
     }
 
     private func configureHaptics(on device: IOHIDDevice) {
