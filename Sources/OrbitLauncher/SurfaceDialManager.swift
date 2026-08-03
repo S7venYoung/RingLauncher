@@ -102,7 +102,11 @@ final class SurfaceDialManager: ObservableObject {
 
     private func configureHaptics(on device: IOHIDDevice) {
         let steps = max(1, min(AppSettings.shared.surfaceDialStepsPerRotation, Int(UInt16.max)))
+        // IOHIDDeviceSetReport requires the report ID both as its
+        // reportID argument and as the first byte when the device uses
+        // multiple reports. Surface Dial's haptic feature report is ID 1.
         var report: [UInt8] = [
+            0x01,
             UInt8(steps & 0xFF),
             UInt8((steps >> 8) & 0xFF),
             0x00,
