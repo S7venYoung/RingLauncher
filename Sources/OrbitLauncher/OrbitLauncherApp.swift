@@ -731,6 +731,22 @@ final class AppSettings: ObservableObject {
     @Published var secondRingEnabled: Bool {
         didSet { UserDefaults.standard.set(secondRingEnabled, forKey: Keys.secondRingEnabled) }
     }
+    @Published var ringAutoDismissEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                ringAutoDismissEnabled,
+                forKey: Keys.ringAutoDismissEnabled
+            )
+        }
+    }
+    @Published var ringAutoDismissSeconds: Int {
+        didSet {
+            UserDefaults.standard.set(
+                ringAutoDismissSeconds,
+                forKey: Keys.ringAutoDismissSeconds
+            )
+        }
+    }
     @Published var surfaceDialEnabled: Bool {
         didSet {
             UserDefaults.standard.set(surfaceDialEnabled, forKey: Keys.surfaceDialEnabled)
@@ -811,6 +827,8 @@ final class AppSettings: ObservableObject {
         static let appearance = "appearance"
         static let showItemNames = "showItemNames"
         static let secondRingEnabled = "secondRingEnabled"
+        static let ringAutoDismissEnabled = "ringAutoDismissEnabled"
+        static let ringAutoDismissSeconds = "ringAutoDismissSeconds"
         static let surfaceDialEnabled = "surfaceDialEnabled"
         static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
         static let surfaceDialHapticsEnabled = "surfaceDialHapticsEnabled"
@@ -839,6 +857,10 @@ final class AppSettings: ObservableObject {
         appearance = defaults.string(forKey: Keys.appearance) ?? "system"
         showItemNames = defaults.object(forKey: Keys.showItemNames) as? Bool ?? true
         secondRingEnabled = defaults.object(forKey: Keys.secondRingEnabled) as? Bool ?? true
+        ringAutoDismissEnabled =
+            defaults.object(forKey: Keys.ringAutoDismissEnabled) as? Bool ?? true
+        ringAutoDismissSeconds =
+            defaults.object(forKey: Keys.ringAutoDismissSeconds) as? Int ?? 5
         surfaceDialEnabled = defaults.object(forKey: Keys.surfaceDialEnabled) as? Bool ?? true
         surfaceDialStepsPerRotation =
             defaults.object(forKey: Keys.surfaceDialStepsPerRotation) as? Int ?? 20
@@ -1230,6 +1252,13 @@ struct SettingsView: View {
 
                 Section("操作") {
                     Toggle("启用第二层快捷操作", isOn: $settings.secondRingEnabled)
+                    Toggle("圆环无操作时自动隐藏", isOn: $settings.ringAutoDismissEnabled)
+                    Stepper(
+                        "自动隐藏时间：\(settings.ringAutoDismissSeconds) 秒",
+                        value: $settings.ringAutoDismissSeconds,
+                        in: 1...60
+                    )
+                    .disabled(!settings.ringAutoDismissEnabled)
                     Toggle("切换时播放音效", isOn: $settings.soundEnabled)
                     Toggle("启用过渡动画", isOn: $settings.animationsEnabled)
                     Text(
@@ -1239,6 +1268,9 @@ struct SettingsView: View {
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    Text("应用切换器和环形启动器呼出后会开始计时；旋转、滚轮、键盘、鼠标选择或进入下一环都会重新计时。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -1772,6 +1804,7 @@ final class RingPanelController {
     private var wheelDetectorArmed = true
     private var wheelDetentProgress = 0
     private var lastWheelSelectionTime: TimeInterval = 0
+    private var inactivityDismissWorkItem: DispatchWorkItem?
 
     init() {
         panel = RingPanel(
@@ -1790,6 +1823,7 @@ final class RingPanelController {
         panel.contentView = NSHostingView(rootView: RingMenuView(model: model))
 
         model.dismiss = { [weak self] in self?.hide() }
+        model.activity = { [weak self] in self?.resetInactivityTimer() }
     }
 
     func toggle() {
@@ -1840,6 +1874,7 @@ final class RingPanelController {
         )
         panel.setFrameOrigin(origin)
         panel.makeKeyAndOrderFront(nil)
+        resetInactivityTimer()
         logger.notice("Ring shown; keyWindow=\(self.panel.isKeyWindow, privacy: .public)")
 
         let eventMask: NSEvent.EventTypeMask = [.keyDown, .scrollWheel]
@@ -1866,6 +1901,7 @@ final class RingPanelController {
             let horizontal = event.scrollingDeltaX
             let delta = abs(vertical) >= abs(horizontal) ? vertical : horizontal
             guard delta != 0 else { return false }
+            resetInactivityTimer()
 
             let now = Date.timeIntervalSinceReferenceDate
             let direction = delta > 0 ? 1 : -1
@@ -1926,6 +1962,8 @@ final class RingPanelController {
             return true
         }
 
+        resetInactivityTimer()
+
         switch Int(event.keyCode) {
         case kVK_Escape:
             model.escape()
@@ -1948,6 +1986,8 @@ final class RingPanelController {
     }
 
     private func hide() {
+        inactivityDismissWorkItem?.cancel()
+        inactivityDismissWorkItem = nil
         panel.orderOut(nil)
         removeInputMonitors()
         resetWheelDetector()
@@ -1974,6 +2014,29 @@ final class RingPanelController {
         lastWheelSelectionTime = 0
     }
 
+    private func resetInactivityTimer() {
+        inactivityDismissWorkItem?.cancel()
+        inactivityDismissWorkItem = nil
+        guard panel.isVisible,
+              AppSettings.shared.ringAutoDismissEnabled else {
+            return
+        }
+
+        let seconds = max(1, AppSettings.shared.ringAutoDismissSeconds)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.panel.isVisible else { return }
+            self.logger.notice(
+                "Ring hidden after inactivity timeout seconds=\(seconds, privacy: .public)"
+            )
+            self.hide()
+        }
+        inactivityDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .seconds(seconds),
+            execute: workItem
+        )
+    }
+
     private var settingsInterval: Int { AppSettings.shared.wheelDebounceMilliseconds }
 }
 
@@ -1989,6 +2052,7 @@ final class RingModel: ObservableObject {
     @Published var selectedIndex = 0
     @Published var presentationID = UUID()
     var dismiss: (() -> Void)?
+    var activity: (() -> Void)?
 
     var items: [RingItem] {
         if let selectedApp {
@@ -2035,16 +2099,19 @@ final class RingModel: ObservableObject {
     }
 
     func goBack() {
+        activity?()
         selectedApp = nil
         selectedIndex = 0
     }
 
     func escape() {
+        activity?()
         if selectedApp != nil { selectedApp = nil } else { dismiss?() }
         selectedIndex = 0
     }
 
     func resetSelection() {
+        activity?()
         selectedIndex = 0
     }
 
@@ -2059,17 +2126,20 @@ final class RingModel: ObservableObject {
     }
 
     func moveSelection(by step: Int) {
+        activity?()
         guard !items.isEmpty else { return }
         selectedIndex = (selectedIndex + step + items.count) % items.count
         playSelectionSound()
     }
 
     func performSelected() {
+        activity?()
         guard items.indices.contains(selectedIndex) else { return }
         items[selectedIndex].action()
     }
 
     func performSecondaryAction() {
+        activity?()
         guard AppSettings.shared.operatingMode == "switcher",
               selectedApp == nil,
               apps.indices.contains(selectedIndex) else {
@@ -2091,6 +2161,7 @@ final class RingModel: ObservableObject {
     }
 
     func select(_ id: String) {
+        activity?()
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         guard selectedIndex != index else { return }
         selectedIndex = index
@@ -2098,6 +2169,7 @@ final class RingModel: ObservableObject {
     }
 
     func select(index: Int) {
+        activity?()
         guard items.indices.contains(index), selectedIndex != index else { return }
         selectedIndex = index
         playSelectionSound()
@@ -2507,7 +2579,10 @@ struct RingMenuView: View {
         let x = cos(angle.radians) * itemRadius
         let y = sin(angle.radians) * itemRadius
 
-        return Button(action: item.action) {
+        return Button {
+            model.activity?()
+            item.action()
+        } label: {
             VStack(spacing: 7) {
                 ZStack {
                     Circle()
