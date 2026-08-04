@@ -2320,12 +2320,19 @@ private func postSystemDefinedKey(_ keyType: Int) {
 }
 
 private func postScrollWheel(lines: Int) {
+    // CGEvent's wheel delta represents the physical wheel direction. Convert the
+    // user-facing page direction so it stays correct with Natural Scrolling on
+    // or off.
+    let naturalScrolling = UserDefaults.standard.object(
+        forKey: "com.apple.swipescrolldirection"
+    ) as? Bool ?? true
+    let wheelLines = naturalScrolling ? -lines : lines
     guard let source = CGEventSource(stateID: .hidSystemState),
           let event = CGEvent(
               scrollWheelEvent2Source: source,
               units: .line,
               wheelCount: 1,
-              wheel1: Int32(lines),
+              wheel1: Int32(wheelLines),
               wheel2: 0,
               wheel3: 0
           ) else {
