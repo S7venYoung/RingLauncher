@@ -2747,8 +2747,10 @@ private func windowServerWindows(
     return rawWindows.compactMap { info in
         guard let ownerPID = info[kCGWindowOwnerPID] as? NSNumber,
               let layer = info[kCGWindowLayer] as? NSNumber,
-              let boundsDictionary = info[kCGWindowBounds] as? CFDictionary,
-              let bounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
+              let boundsDictionary = info[kCGWindowBounds] as? NSDictionary,
+              let bounds = CGRect(
+                  dictionaryRepresentation: boundsDictionary as CFDictionary
+              ) else {
             return nil
         }
         let alpha = (info[kCGWindowAlpha] as? NSNumber)?.doubleValue ?? 1
