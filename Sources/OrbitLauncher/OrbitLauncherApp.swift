@@ -2648,11 +2648,14 @@ private func frontmostWindowIsFullScreen() -> Bool {
             "AXFullScreen" as CFString,
             &fullScreenValue
         ) == .success,
-        let isFullScreen = fullScreenValue as? Bool {
-            return isFullScreen
+        let isFullScreen = fullScreenValue as? Bool,
+        isFullScreen {
+            return true
         }
     }
-    return false
+    return windowServerReportsFullScreenWindow(
+        processIdentifier: application.processIdentifier
+    )
 }
 
 private func applicationHasSwitchableWindow(
@@ -2681,7 +2684,81 @@ private func applicationHasSwitchableWindow(
     }
 
     let windows = unsafeBitCast(windowsValue, to: CFArray.self)
-    return CFArrayGetCount(windows) > 0
+    if CFArrayGetCount(windows) > 0 {
+        return true
+    }
+
+    // Some applications do not expose AXWindows while their full-screen window
+    // lives in another Space. Window Server still knows about that window.
+    return windowServerHasSwitchableWindow(
+        processIdentifier: application.processIdentifier
+    )
+}
+
+private func windowServerHasSwitchableWindow(
+    processIdentifier: pid_t
+) -> Bool {
+    windowServerWindows(options: [.optionAll, .excludeDesktopElements])
+        .contains { window in
+            window.processIdentifier == processIdentifier
+                && window.layer == 0
+                && window.alpha > 0
+                && window.bounds.width >= 80
+                && window.bounds.height >= 60
+        }
+}
+
+private func windowServerReportsFullScreenWindow(
+    processIdentifier: pid_t
+) -> Bool {
+    let windows = windowServerWindows(
+        options: [.optionOnScreenOnly, .excludeDesktopElements]
+    )
+    return windows.contains { window in
+        guard window.processIdentifier == processIdentifier,
+              window.layer == 0,
+              window.alpha > 0 else {
+            return false
+        }
+        return NSScreen.screens.contains { screen in
+            abs(window.bounds.width - screen.frame.width) <= 2
+                && abs(window.bounds.height - screen.frame.height) <= 2
+        }
+    }
+}
+
+private struct WindowServerWindow {
+    let processIdentifier: pid_t
+    let layer: Int
+    let alpha: Double
+    let bounds: CGRect
+}
+
+private func windowServerWindows(
+    options: CGWindowListOption
+) -> [WindowServerWindow] {
+    guard let rawWindows = CGWindowListCopyWindowInfo(
+        options,
+        CGWindowID(kCGNullWindowID)
+    ) as? [NSDictionary] else {
+        return []
+    }
+
+    return rawWindows.compactMap { info in
+        guard let ownerPID = info[kCGWindowOwnerPID] as? NSNumber,
+              let layer = info[kCGWindowLayer] as? NSNumber,
+              let boundsDictionary = info[kCGWindowBounds] as? CFDictionary,
+              let bounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
+            return nil
+        }
+        let alpha = (info[kCGWindowAlpha] as? NSNumber)?.doubleValue ?? 1
+        return WindowServerWindow(
+            processIdentifier: pid_t(ownerPID.int32Value),
+            layer: layer.intValue,
+            alpha: alpha,
+            bounds: bounds
+        )
+    }
 }
 
 private func restoreMinimizedWindows(of processIdentifier: pid_t) {
