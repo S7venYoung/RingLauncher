@@ -51,6 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingDialLongPress: DispatchWorkItem?
     private var dialButtonIsDown = false
     private var dialLongPressDidFire = false
+    private var dialButtonUsesDirectControl = false
+    private var lastSmartModeUsesDirectControl: Bool?
     private let dialDoublePressInterval: TimeInterval = 0.32
     private let dialLongPressInterval: TimeInterval = 0.65
     private let dialSecondLayerTimeout: TimeInterval = 5
@@ -107,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = AppSettings.shared
         surfaceDial.onRotation = { [weak self] direction in
             guard let self else { return }
-            if AppSettings.shared.surfaceDialControlMode == "direct" {
+            if self.shouldUseDirectDialControl() {
                 self.performDialShortcut(
                     direction > 0 ? .clockwise : .counterClockwise
                 )
@@ -117,13 +119,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         surfaceDial.onButtonChanged = { [weak self] pressed in
             guard let self else { return }
-            if AppSettings.shared.surfaceDialControlMode == "direct" {
+            if pressed {
+                self.dialButtonUsesDirectControl = self.shouldUseDirectDialControl()
+            }
+            if self.dialButtonUsesDirectControl {
                 self.handleDirectDialButtonChanged(pressed)
             } else {
                 self.cancelDirectDialButtonGestures()
                 if pressed {
                     self.controller?.handleSurfaceDialButton(pressed: true)
                 }
+            }
+            if !pressed {
+                self.dialButtonUsesDirectControl = false
             }
         }
         surfaceDial.setHapticsEnabled(settings.surfaceDialHapticsEnabled)
@@ -138,6 +146,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func shouldUseDirectDialControl() -> Bool {
+        if controller?.isVisible == true { return false }
+
+        let settings = AppSettings.shared
+        switch settings.surfaceDialControlMode {
+        case "direct":
+            return true
+        case "smart":
+            let usesDirectControl = frontmostWindowIsFullScreen()
+            if lastSmartModeUsesDirectControl != usesDirectControl {
+                dialLogger.notice(
+                    "Smart Dial mode=\(usesDirectControl ? "direct" : "ring", privacy: .public)"
+                )
+                lastSmartModeUsesDirectControl = usesDirectControl
+            }
+            return usesDirectControl
+        default:
+            return false
+        }
+    }
+
+    private func showRingFromSmartMode() {
+        activeDialSecondLayerProfileID = nil
+        dialSecondLayerExpiresAt = 0
+        controller?.showForSurfaceDial()
+        dialLogger.notice("Smart Dial gesture opened ring")
+    }
+
     private func handleDirectDialButtonChanged(_ pressed: Bool) {
         if pressed {
             dialButtonIsDown = true
@@ -150,7 +186,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.pendingDialSinglePress = nil
                 self.pendingDialLongPress = nil
                 self.dialLongPressDidFire = true
-                self.performDialShortcut(.longPress)
+                if AppSettings.shared.surfaceDialControlMode == "smart"
+                    && AppSettings.shared.surfaceDialSmartRingGesture == "longPress" {
+                    self.showRingFromSmartMode()
+                } else {
+                    self.performDialShortcut(.longPress)
+                }
             }
             pendingDialLongPress = longPress
             DispatchQueue.main.asyncAfter(
@@ -172,7 +213,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let pendingDialSinglePress {
             pendingDialSinglePress.cancel()
             self.pendingDialSinglePress = nil
-            performDialShortcut(.doublePress)
+            if AppSettings.shared.surfaceDialControlMode == "smart"
+                && AppSettings.shared.surfaceDialSmartRingGesture == "doublePress" {
+                showRingFromSmartMode()
+            } else {
+                performDialShortcut(.doublePress)
+            }
             return
         }
 
@@ -195,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingDialLongPress = nil
         dialButtonIsDown = false
         dialLongPressDidFire = false
+        dialButtonUsesDirectControl = false
     }
 
     private func performDialShortcut(_ action: DialControlAction) {
@@ -254,9 +301,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "volumeDown":
             postSystemDefinedKey(1)
         case "brightnessUp":
-            postSystemDefinedKey(2)
+            postBrightnessKey(increase: true)
         case "brightnessDown":
-            postSystemDefinedKey(3)
+            postBrightnessKey(increase: false)
         case "mute":
             postSystemDefinedKey(7)
         case "playPause":
@@ -266,9 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "previousTrack":
             postSystemDefinedKey(18)
         case "missionControl":
-            postKeyboardShortcut(
-                DialShortcut(keyCode: kVK_UpArrow, modifiers: controlKey)
-            )
+            openMissionControl()
         case "appExpose":
             postKeyboardShortcut(
                 DialShortcut(keyCode: kVK_DownArrow, modifiers: controlKey)
@@ -823,6 +868,14 @@ final class AppSettings: ObservableObject {
             UserDefaults.standard.set(surfaceDialControlMode, forKey: Keys.surfaceDialControlMode)
         }
     }
+    @Published var surfaceDialSmartRingGesture: String {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialSmartRingGesture,
+                forKey: Keys.surfaceDialSmartRingGesture
+            )
+        }
+    }
     @Published private(set) var dialProfiles: [DialAppProfile]
     @Published var selectedDialProfileID: String {
         didSet {
@@ -864,6 +917,7 @@ final class AppSettings: ObservableObject {
         static let surfaceDialPreventSleepEnabled = "surfaceDialPreventSleepEnabled"
         static let surfaceDialKeepAliveSeconds = "surfaceDialKeepAliveSeconds"
         static let surfaceDialControlMode = "surfaceDialControlMode"
+        static let surfaceDialSmartRingGesture = "surfaceDialSmartRingGesture"
         static let dialProfiles = "dialProfiles"
         static let selectedDialProfileID = "selectedDialProfileID"
         static let operatingMode = "operatingMode"
@@ -901,6 +955,8 @@ final class AppSettings: ObservableObject {
             defaults.object(forKey: Keys.surfaceDialKeepAliveSeconds) as? Int ?? 15
         surfaceDialControlMode =
             defaults.string(forKey: Keys.surfaceDialControlMode) ?? "ring"
+        surfaceDialSmartRingGesture =
+            defaults.string(forKey: Keys.surfaceDialSmartRingGesture) ?? "longPress"
         let savedDialProfiles: [DialAppProfile]
         if let data = defaults.data(forKey: Keys.dialProfiles),
            let profiles = try? JSONDecoder().decode([DialAppProfile].self, from: data),
@@ -1423,6 +1479,7 @@ struct SettingsView: View {
                     Picker("操作模式", selection: $settings.surfaceDialControlMode) {
                         Text("环形切换").tag("ring")
                         Text("直接控制").tag("direct")
+                        Text("智能混合").tag("smart")
                     }
                     .pickerStyle(.segmented)
                     .disabled(!settings.surfaceDialEnabled)
@@ -1459,10 +1516,25 @@ struct SettingsView: View {
                     Text(
                         settings.surfaceDialControlMode == "direct"
                             ? "直接控制会根据当前前台应用发送配置的快捷键，不显示圆环。"
-                            : "圆环隐藏时第一次旋转只负责呼出；继续旋转选择，按下立即确认。"
+                            : settings.surfaceDialControlMode == "smart"
+                                ? "普通窗口使用应用环；进入独立 Space 的原生全屏窗口后自动使用直接控制。"
+                                : "圆环隐藏时第一次旋转只负责呼出；继续旋转选择，按下立即确认。"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    if settings.surfaceDialControlMode == "smart" {
+                        Picker(
+                            "全屏时强制呼出应用环",
+                            selection: $settings.surfaceDialSmartRingGesture
+                        ) {
+                            Text("长按").tag("longPress")
+                            Text("双击").tag("doublePress")
+                        }
+                        .pickerStyle(.segmented)
+                        Text("强制呼环手势会覆盖全屏应用模板中的同名动作；普通最大化窗口不视为全屏。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("触觉反馈开启后，Dial 会按每圈步数产生对应的物理刻度震动。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1471,7 +1543,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if settings.surfaceDialControlMode == "direct" {
+                if settings.surfaceDialControlMode != "ring" {
                     Section("Dial 直接控制") {
                         Picker("应用配置", selection: $settings.selectedDialProfileID) {
                             ForEach(settings.dialProfiles) { profile in
@@ -1905,6 +1977,8 @@ final class RingPanelController {
         model.activity = { [weak self] in self?.resetInactivityTimer() }
     }
 
+    var isVisible: Bool { panel.isVisible }
+
     func toggle() {
         panel.isVisible ? hide() : show()
     }
@@ -1928,6 +2002,11 @@ final class RingPanelController {
         } else {
             show()
         }
+    }
+
+    func showForSurfaceDial() {
+        guard !panel.isVisible else { return }
+        show()
     }
 
     private func show() {
@@ -2351,6 +2430,23 @@ private func postSystemDefinedKey(_ keyType: Int) {
     keyUp?.cgEvent?.post(tap: .cghidEventTap)
 }
 
+private func postBrightnessKey(increase: Bool) {
+    // Brightness keys are hardware virtual keys on macOS. Posting their actual
+    // key codes is more reliable than routing them through media-key events.
+    let keyCode: Int = increase ? 0x90 : 0x91
+    postKeyboardShortcut(DialShortcut(keyCode: keyCode, modifiers: 0))
+}
+
+private func openMissionControl() {
+    let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
+    if !NSWorkspace.shared.open(url) {
+        // Keep a keyboard fallback for older or customized macOS installations.
+        postKeyboardShortcut(
+            DialShortcut(keyCode: kVK_UpArrow, modifiers: controlKey)
+        )
+    }
+}
+
 private enum ScrollAxis: Equatable {
     case vertical
     case horizontal
@@ -2521,6 +2617,42 @@ private func activateAndRestoreWindows(_ application: NSRunningApplication) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
         restoreMinimizedWindows(of: processIdentifier)
     }
+}
+
+private func frontmostWindowIsFullScreen() -> Bool {
+    guard AXIsProcessTrusted(),
+          let application = NSWorkspace.shared.frontmostApplication,
+          application.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+        return false
+    }
+
+    let applicationElement = AXUIElementCreateApplication(
+        application.processIdentifier
+    )
+    for attribute in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+        var windowValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            applicationElement,
+            attribute as CFString,
+            &windowValue
+        ) == .success,
+        let windowValue,
+        CFGetTypeID(windowValue) == AXUIElementGetTypeID() else {
+            continue
+        }
+
+        let window = unsafeBitCast(windowValue, to: AXUIElement.self)
+        var fullScreenValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            window,
+            "AXFullScreen" as CFString,
+            &fullScreenValue
+        ) == .success,
+        let isFullScreen = fullScreenValue as? Bool {
+            return isFullScreen
+        }
+    }
+    return false
 }
 
 private func applicationHasSwitchableWindow(
