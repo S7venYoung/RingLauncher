@@ -349,6 +349,12 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
     var secondLayerDoublePress: DialShortcut? = nil
     var secondLayerLongPress: DialShortcut? = nil
 
+    var hasSecondLayer: Bool {
+        [press, doublePress, longPress].contains {
+            $0?.resolvedKind == "enterSecondLayer"
+        }
+    }
+
     func shortcut(
         for action: DialControlAction,
         layer: Int = 1
@@ -413,6 +419,274 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
                     kind: "none"
                 )
         }
+    }
+}
+
+enum DialProfilePreset: String, CaseIterable, Identifiable {
+    case system
+    case browser
+    case finder
+    case codeEditor
+    case xcode
+    case photoshop
+    case videoEditor
+    case terminal
+    case media
+    case pdfReader
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .system: return "系统默认"
+        case .browser: return "浏览器"
+        case .finder: return "Finder"
+        case .codeEditor: return "VS Code / Cursor"
+        case .xcode: return "Xcode"
+        case .photoshop: return "Photoshop"
+        case .videoEditor: return "视频剪辑"
+        case .terminal: return "Terminal / iTerm2"
+        case .media: return "音乐与媒体"
+        case .pdfReader: return "PDF 阅读"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .system: return "音量、播放、亮度与 Mission Control"
+        case .browser: return "滚动、地址栏、刷新、缩放与前进后退"
+        case .finder: return "滚动、快速查看、目录导航与新建文件夹"
+        case .codeEditor: return "滚动、快速打开、命令面板与格式化"
+        case .xcode: return "滚动、运行、停止、构建与测试"
+        case .photoshop: return "画笔大小、工具切换、缩放与撤销"
+        case .videoEditor: return "逐帧、播放、切割与时间线缩放"
+        case .terminal: return "滚动、新标签、历史搜索与字体缩放"
+        case .media: return "切歌、播放、静音与音量"
+        case .pdfReader: return "滚动、搜索、缩放与适合页面"
+        }
+    }
+
+    func makeProfile(
+        id: UUID,
+        name: String,
+        bundleIdentifier: String
+    ) -> DialAppProfile {
+        let none = DialShortcut(keyCode: kVK_Space, modifiers: 0, kind: "none")
+        let enterLayer = DialShortcut(
+            keyCode: kVK_Space,
+            modifiers: 0,
+            kind: "enterSecondLayer"
+        )
+        let exitLayer = DialShortcut(
+            keyCode: kVK_Escape,
+            modifiers: 0,
+            kind: "exitSecondLayer"
+        )
+        let scrollUp = DialShortcut(
+            keyCode: kVK_UpArrow,
+            modifiers: 0,
+            kind: "scrollUp",
+            scrollLines: 3
+        )
+        let scrollDown = DialShortcut(
+            keyCode: kVK_DownArrow,
+            modifiers: 0,
+            kind: "scrollDown",
+            scrollLines: 3
+        )
+        let zoomOut = DialShortcut(keyCode: kVK_ANSI_Minus, modifiers: cmdKey)
+        let zoomIn = DialShortcut(keyCode: kVK_ANSI_Equal, modifiers: cmdKey)
+
+        func shortcut(_ keyCode: Int, _ modifiers: Int = 0) -> DialShortcut {
+            DialShortcut(keyCode: keyCode, modifiers: modifiers)
+        }
+
+        func action(_ kind: String) -> DialShortcut {
+            DialShortcut(keyCode: kVK_Space, modifiers: 0, kind: kind)
+        }
+
+        switch self {
+        case .system:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: action("volumeDown"),
+                clockwise: action("volumeUp"),
+                press: action("playPause"),
+                doublePress: action("mute"),
+                longPress: enterLayer,
+                secondLayerCounterClockwise: action("brightnessDown"),
+                secondLayerClockwise: action("brightnessUp"),
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: action("missionControl"),
+                secondLayerLongPress: action("screenshot")
+            )
+        case .browser:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: scrollUp,
+                clockwise: scrollDown,
+                press: enterLayer,
+                doublePress: shortcut(kVK_ANSI_L, cmdKey),
+                longPress: shortcut(kVK_ANSI_R, cmdKey),
+                secondLayerCounterClockwise: zoomOut,
+                secondLayerClockwise: zoomIn,
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_ANSI_LeftBracket, cmdKey),
+                secondLayerLongPress: shortcut(kVK_ANSI_RightBracket, cmdKey)
+            )
+        case .finder:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: scrollUp,
+                clockwise: scrollDown,
+                press: enterLayer,
+                doublePress: shortcut(kVK_Space),
+                longPress: shortcut(kVK_UpArrow, cmdKey),
+                secondLayerCounterClockwise: shortcut(kVK_ANSI_LeftBracket, cmdKey),
+                secondLayerClockwise: shortcut(kVK_ANSI_RightBracket, cmdKey),
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_ANSI_N, cmdKey),
+                secondLayerLongPress: shortcut(kVK_ANSI_N, shiftKey | cmdKey)
+            )
+        case .codeEditor:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: scrollUp,
+                clockwise: scrollDown,
+                press: enterLayer,
+                doublePress: shortcut(kVK_ANSI_P, cmdKey),
+                longPress: shortcut(kVK_ANSI_P, shiftKey | cmdKey),
+                secondLayerCounterClockwise: zoomOut,
+                secondLayerClockwise: zoomIn,
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_F12),
+                secondLayerLongPress: shortcut(kVK_ANSI_F, shiftKey | optionKey)
+            )
+        case .xcode:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: scrollUp,
+                clockwise: scrollDown,
+                press: enterLayer,
+                doublePress: shortcut(kVK_ANSI_R, cmdKey),
+                longPress: shortcut(kVK_ANSI_Period, cmdKey),
+                secondLayerCounterClockwise: zoomOut,
+                secondLayerClockwise: zoomIn,
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_ANSI_B, cmdKey),
+                secondLayerLongPress: shortcut(kVK_ANSI_U, cmdKey)
+            )
+        case .photoshop:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: shortcut(kVK_ANSI_LeftBracket),
+                clockwise: shortcut(kVK_ANSI_RightBracket),
+                press: enterLayer,
+                doublePress: shortcut(kVK_ANSI_B),
+                longPress: shortcut(kVK_ANSI_E),
+                secondLayerCounterClockwise: zoomOut,
+                secondLayerClockwise: zoomIn,
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_ANSI_Z, cmdKey),
+                secondLayerLongPress: none
+            )
+        case .videoEditor:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: shortcut(kVK_LeftArrow),
+                clockwise: shortcut(kVK_RightArrow),
+                press: shortcut(kVK_Space),
+                doublePress: enterLayer,
+                longPress: shortcut(kVK_ANSI_B, cmdKey),
+                secondLayerCounterClockwise: zoomOut,
+                secondLayerClockwise: zoomIn,
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_ANSI_Z, shiftKey),
+                secondLayerLongPress: shortcut(kVK_ANSI_K)
+            )
+        case .terminal:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: scrollUp,
+                clockwise: scrollDown,
+                press: enterLayer,
+                doublePress: shortcut(kVK_ANSI_T, cmdKey),
+                longPress: shortcut(kVK_ANSI_L, cmdKey),
+                secondLayerCounterClockwise: zoomOut,
+                secondLayerClockwise: zoomIn,
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_ANSI_R, controlKey),
+                secondLayerLongPress: shortcut(kVK_ANSI_N, cmdKey)
+            )
+        case .media:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: action("previousTrack"),
+                clockwise: action("nextTrack"),
+                press: action("playPause"),
+                doublePress: action("mute"),
+                longPress: enterLayer,
+                secondLayerCounterClockwise: action("volumeDown"),
+                secondLayerClockwise: action("volumeUp"),
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: none,
+                secondLayerLongPress: none
+            )
+        case .pdfReader:
+            return DialAppProfile(
+                id: id, name: name, bundleIdentifier: bundleIdentifier,
+                counterClockwise: scrollUp,
+                clockwise: scrollDown,
+                press: enterLayer,
+                doublePress: shortcut(kVK_ANSI_F, cmdKey),
+                longPress: none,
+                secondLayerCounterClockwise: zoomOut,
+                secondLayerClockwise: zoomIn,
+                secondLayerPress: exitLayer,
+                secondLayerDoublePress: shortcut(kVK_ANSI_9, cmdKey),
+                secondLayerLongPress: none
+            )
+        }
+    }
+
+    static func recommended(for bundleIdentifier: String) -> DialProfilePreset {
+        let bundleID = bundleIdentifier.lowercased()
+        if bundleID == "com.apple.finder" { return .finder }
+        if bundleID == "com.apple.dt.xcode" { return .xcode }
+        if bundleID.contains("photoshop") { return .photoshop }
+        if bundleID == "com.apple.terminal" || bundleID.contains("iterm") {
+            return .terminal
+        }
+        if bundleID == "com.apple.finalcut"
+            || bundleID.contains("davinciresolve")
+            || bundleID.contains("premierepro") {
+            return .videoEditor
+        }
+        if bundleID == "com.apple.music"
+            || bundleID == "com.spotify.client"
+            || bundleID.contains("podcast") {
+            return .media
+        }
+        if bundleID == "com.apple.preview"
+            || bundleID.contains("pdfexpert")
+            || bundleID.contains("skim-app") {
+            return .pdfReader
+        }
+        if bundleID.contains("vscode")
+            || bundleID.contains("cursor")
+            || bundleID == "com.todesktop.230313mzl4w4u92"
+            || bundleID.contains("sublimetext") {
+            return .codeEditor
+        }
+        if bundleID.contains("safari")
+            || bundleID.contains("chrome")
+            || bundleID.contains("firefox")
+            || bundleID.contains("edgemac")
+            || bundleID.contains("arc")
+            || bundleID == "company.thebrowser.browser" {
+            return .browser
+        }
+        return .system
     }
 }
 
@@ -555,23 +829,10 @@ final class AppSettings: ObservableObject {
             savedDialProfiles = profiles
         } else {
             savedDialProfiles = [
-                DialAppProfile(
+                DialProfilePreset.system.makeProfile(
                     id: UUID(),
                     name: "默认配置",
-                    bundleIdentifier: "*",
-                    counterClockwise: DialShortcut(
-                        keyCode: kVK_LeftArrow,
-                        modifiers: 0,
-                        kind: "scrollUp",
-                        scrollLines: 3
-                    ),
-                    clockwise: DialShortcut(
-                        keyCode: kVK_RightArrow,
-                        modifiers: 0,
-                        kind: "scrollDown",
-                        scrollLines: 3
-                    ),
-                    press: DialShortcut(keyCode: kVK_Space, modifiers: 0)
+                    bundleIdentifier: "*"
                 )
             ]
         }
@@ -723,19 +984,28 @@ final class AppSettings: ObservableObject {
             return
         }
 
-        let fallback = dialProfiles.first(where: { $0.bundleIdentifier == "*" })
-            ?? dialProfiles[0]
-        let profile = DialAppProfile(
+        let preset = DialProfilePreset.recommended(for: bundleIdentifier)
+        let profile = preset.makeProfile(
             id: UUID(),
             name: FileManager.default.displayName(atPath: url.path)
                 .replacingOccurrences(of: ".app", with: ""),
-            bundleIdentifier: bundleIdentifier,
-            counterClockwise: fallback.counterClockwise,
-            clockwise: fallback.clockwise,
-            press: fallback.press
+            bundleIdentifier: bundleIdentifier
         )
         dialProfiles.append(profile)
         selectedDialProfileID = profile.id.uuidString
+        saveDialProfiles()
+    }
+
+    func applyDialPreset(_ preset: DialProfilePreset) {
+        guard let index = dialProfiles.firstIndex(where: {
+            $0.id.uuidString == selectedDialProfileID
+        }) else { return }
+        let current = dialProfiles[index]
+        dialProfiles[index] = preset.makeProfile(
+            id: current.id,
+            name: current.name,
+            bundleIdentifier: current.bundleIdentifier
+        )
         saveDialProfiles()
     }
 
@@ -860,6 +1130,11 @@ struct HotKeyKey: Identifiable {
 
     static let options: [HotKeyKey] = [
         .init(code: kVK_Space, label: "Space"),
+        .init(code: kVK_ANSI_0, label: "0"), .init(code: kVK_ANSI_1, label: "1"),
+        .init(code: kVK_ANSI_2, label: "2"), .init(code: kVK_ANSI_3, label: "3"),
+        .init(code: kVK_ANSI_4, label: "4"), .init(code: kVK_ANSI_5, label: "5"),
+        .init(code: kVK_ANSI_6, label: "6"), .init(code: kVK_ANSI_7, label: "7"),
+        .init(code: kVK_ANSI_8, label: "8"), .init(code: kVK_ANSI_9, label: "9"),
         .init(code: kVK_ANSI_A, label: "A"), .init(code: kVK_ANSI_B, label: "B"),
         .init(code: kVK_ANSI_C, label: "C"), .init(code: kVK_ANSI_D, label: "D"),
         .init(code: kVK_ANSI_E, label: "E"), .init(code: kVK_ANSI_F, label: "F"),
@@ -879,10 +1154,24 @@ struct HotKeyKey: Identifiable {
         .init(code: kVK_F7, label: "F7"), .init(code: kVK_F8, label: "F8"),
         .init(code: kVK_F9, label: "F9"), .init(code: kVK_F10, label: "F10"),
         .init(code: kVK_F11, label: "F11"), .init(code: kVK_F12, label: "F12"),
+        .init(code: kVK_ANSI_Minus, label: "−"),
+        .init(code: kVK_ANSI_Equal, label: "="),
+        .init(code: kVK_ANSI_LeftBracket, label: "["),
+        .init(code: kVK_ANSI_RightBracket, label: "]"),
+        .init(code: kVK_ANSI_Backslash, label: "\\"),
+        .init(code: kVK_ANSI_Semicolon, label: ";"),
+        .init(code: kVK_ANSI_Quote, label: "'"),
+        .init(code: kVK_ANSI_Comma, label: ","),
+        .init(code: kVK_ANSI_Period, label: "."),
+        .init(code: kVK_ANSI_Slash, label: "/"),
+        .init(code: kVK_ANSI_Grave, label: "`"),
         .init(code: kVK_LeftArrow, label: "←"), .init(code: kVK_RightArrow, label: "→"),
         .init(code: kVK_UpArrow, label: "↑"), .init(code: kVK_DownArrow, label: "↓"),
+        .init(code: kVK_Home, label: "Home"), .init(code: kVK_End, label: "End"),
+        .init(code: kVK_PageUp, label: "Page Up"), .init(code: kVK_PageDown, label: "Page Down"),
         .init(code: kVK_Return, label: "Return"), .init(code: kVK_Tab, label: "Tab"),
-        .init(code: kVK_Escape, label: "Esc"), .init(code: kVK_Delete, label: "Delete")
+        .init(code: kVK_Escape, label: "Esc"), .init(code: kVK_Delete, label: "Delete"),
+        .init(code: kVK_ForwardDelete, label: "Forward Delete")
     ]
 }
 
@@ -1066,6 +1355,13 @@ struct SettingsView: View {
                             Button("添加应用…") {
                                 settings.addDialApplicationProfile()
                             }
+                            Menu("套用模板…") {
+                                ForEach(DialProfilePreset.allCases) { preset in
+                                    Button("\(preset.name) — \(preset.summary)") {
+                                        settings.applyDialPreset(preset)
+                                    }
+                                }
+                            }
                             Button("删除当前配置", role: .destructive) {
                                 settings.removeSelectedDialProfile()
                             }
@@ -1074,6 +1370,10 @@ struct SettingsView: View {
                             )
                             Spacer()
                         }
+
+                        Text("添加应用时会自动匹配模板；手动套用模板会替换当前应用的第一层和第二层操作。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
 
                         if let profile = settings.selectedDialProfile {
                             LabeledContent("应用标识") {
@@ -1109,8 +1409,7 @@ struct SettingsView: View {
                             settings: settings
                         )
 
-                        if settings.dialShortcut(for: .press).resolvedKind
-                            == "enterSecondLayer" {
+                        if settings.selectedDialProfile?.hasSecondLayer == true {
                             Divider()
                             Text("第二层")
                                 .font(.headline)
@@ -1144,7 +1443,7 @@ struct SettingsView: View {
                                 layer: 2,
                                 settings: settings
                             )
-                            Text("第二层连续 5 秒无操作会自动返回第一层。浏览器默认是 ⌘− 缩小、⌘= 放大。")
+                            Text("第二层连续 5 秒无操作会自动返回第一层。第二层可以由单击、双击或长按进入。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
