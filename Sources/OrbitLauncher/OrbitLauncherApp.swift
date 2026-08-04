@@ -2703,8 +2703,7 @@ private func windowServerHasSwitchableWindow(
             window.processIdentifier == processIdentifier
                 && window.layer == 0
                 && window.alpha > 0
-                && window.bounds.width >= 80
-                && window.bounds.height >= 60
+                && windowMatchesFullScreenSize(window)
         }
 }
 
@@ -2720,10 +2719,16 @@ private func windowServerReportsFullScreenWindow(
               window.alpha > 0 else {
             return false
         }
-        return NSScreen.screens.contains { screen in
-            abs(window.bounds.width - screen.frame.width) <= 2
-                && abs(window.bounds.height - screen.frame.height) <= 2
-        }
+        return windowMatchesFullScreenSize(window)
+    }
+}
+
+private func windowMatchesFullScreenSize(
+    _ window: WindowServerWindow
+) -> Bool {
+    NSScreen.screens.contains { screen in
+        abs(window.bounds.width - screen.frame.width) <= 2
+            && abs(window.bounds.height - screen.frame.height) <= 2
     }
 }
 
