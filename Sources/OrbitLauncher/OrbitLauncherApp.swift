@@ -47,6 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let surfaceDial = SurfaceDialManager.shared
     private var activeDialSecondLayerProfileID: UUID?
     private var dialSecondLayerExpiresAt: TimeInterval = 0
+    private var pendingDialSinglePress: DispatchWorkItem?
+    private var pendingDialLongPress: DispatchWorkItem?
+    private var dialButtonIsDown = false
+    private var dialLongPressDidFire = false
+    private let dialDoublePressInterval: TimeInterval = 0.32
+    private let dialLongPressInterval: TimeInterval = 0.65
     private let dialSecondLayerTimeout: TimeInterval = 5
     private let dialLogger = Logger(
         subsystem: "com.s7venyoung.orbitlauncher",
@@ -110,11 +116,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         surfaceDial.onButtonChanged = { [weak self] pressed in
-            guard let self, pressed else { return }
+            guard let self else { return }
             if AppSettings.shared.surfaceDialControlMode == "direct" {
-                self.performDialShortcut(.press)
+                self.handleDirectDialButtonChanged(pressed)
             } else {
-                self.controller?.handleSurfaceDialButton(pressed: true)
+                self.cancelDirectDialButtonGestures()
+                if pressed {
+                    self.controller?.handleSurfaceDialButton(pressed: true)
+                }
             }
         }
         surfaceDial.setHapticsEnabled(settings.surfaceDialHapticsEnabled)
@@ -123,6 +132,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             surfaceDial.stop()
         }
+    }
+
+    private func handleDirectDialButtonChanged(_ pressed: Bool) {
+        if pressed {
+            dialButtonIsDown = true
+            dialLongPressDidFire = false
+            pendingDialLongPress?.cancel()
+
+            let longPress = DispatchWorkItem { [weak self] in
+                guard let self, self.dialButtonIsDown else { return }
+                self.pendingDialSinglePress?.cancel()
+                self.pendingDialSinglePress = nil
+                self.pendingDialLongPress = nil
+                self.dialLongPressDidFire = true
+                self.performDialShortcut(.longPress)
+            }
+            pendingDialLongPress = longPress
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + dialLongPressInterval,
+                execute: longPress
+            )
+            return
+        }
+
+        dialButtonIsDown = false
+        pendingDialLongPress?.cancel()
+        pendingDialLongPress = nil
+
+        if dialLongPressDidFire {
+            dialLongPressDidFire = false
+            return
+        }
+
+        if let pendingDialSinglePress {
+            pendingDialSinglePress.cancel()
+            self.pendingDialSinglePress = nil
+            performDialShortcut(.doublePress)
+            return
+        }
+
+        let singlePress = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingDialSinglePress = nil
+            self.performDialShortcut(.press)
+        }
+        pendingDialSinglePress = singlePress
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + dialDoublePressInterval,
+            execute: singlePress
+        )
+    }
+
+    private func cancelDirectDialButtonGestures() {
+        pendingDialSinglePress?.cancel()
+        pendingDialSinglePress = nil
+        pendingDialLongPress?.cancel()
+        pendingDialLongPress = nil
+        dialButtonIsDown = false
+        dialLongPressDidFire = false
     }
 
     private func performDialShortcut(_ action: DialControlAction) {
@@ -161,6 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dialSecondLayerExpiresAt = now + dialSecondLayerTimeout
         }
         switch shortcut.resolvedKind {
+        case "none":
+            break
         case "scrollUp":
             postScrollWheel(lines: shortcut.resolvedScrollLines)
         case "scrollDown":
@@ -245,6 +315,8 @@ enum DialControlAction: String, Codable {
     case counterClockwise
     case clockwise
     case press
+    case doublePress
+    case longPress
 }
 
 struct DialShortcut: Codable, Hashable {
@@ -269,9 +341,13 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
     var counterClockwise: DialShortcut
     var clockwise: DialShortcut
     var press: DialShortcut
+    var doublePress: DialShortcut? = nil
+    var longPress: DialShortcut? = nil
     var secondLayerCounterClockwise: DialShortcut? = nil
     var secondLayerClockwise: DialShortcut? = nil
     var secondLayerPress: DialShortcut? = nil
+    var secondLayerDoublePress: DialShortcut? = nil
+    var secondLayerLongPress: DialShortcut? = nil
 
     func shortcut(
         for action: DialControlAction,
@@ -298,6 +374,20 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
                         modifiers: 0,
                         kind: "exitSecondLayer"
                     )
+            case .doublePress:
+                return secondLayerDoublePress
+                    ?? DialShortcut(
+                        keyCode: kVK_Space,
+                        modifiers: 0,
+                        kind: "none"
+                    )
+            case .longPress:
+                return secondLayerLongPress
+                    ?? DialShortcut(
+                        keyCode: kVK_Space,
+                        modifiers: 0,
+                        kind: "none"
+                    )
             }
         }
 
@@ -308,6 +398,20 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
             return clockwise
         case .press:
             return press
+        case .doublePress:
+            return doublePress
+                ?? DialShortcut(
+                    keyCode: kVK_Space,
+                    modifiers: 0,
+                    kind: "none"
+                )
+        case .longPress:
+            return longPress
+                ?? DialShortcut(
+                    keyCode: kVK_Space,
+                    modifiers: 0,
+                    kind: "none"
+                )
         }
     }
 }
@@ -576,6 +680,10 @@ final class AppSettings: ObservableObject {
                 dialProfiles[index].secondLayerClockwise = shortcut
             case .press:
                 dialProfiles[index].secondLayerPress = shortcut
+            case .doublePress:
+                dialProfiles[index].secondLayerDoublePress = shortcut
+            case .longPress:
+                dialProfiles[index].secondLayerLongPress = shortcut
             }
         } else {
             switch action {
@@ -585,6 +693,10 @@ final class AppSettings: ObservableObject {
                 dialProfiles[index].clockwise = shortcut
             case .press:
                 dialProfiles[index].press = shortcut
+            case .doublePress:
+                dialProfiles[index].doublePress = shortcut
+            case .longPress:
+                dialProfiles[index].longPress = shortcut
             }
         }
         saveDialProfiles()
@@ -982,8 +1094,18 @@ struct SettingsView: View {
                             settings: settings
                         )
                         DialShortcutRow(
-                            title: "按下",
+                            title: "单击",
                             action: .press,
+                            settings: settings
+                        )
+                        DialShortcutRow(
+                            title: "双击",
+                            action: .doublePress,
+                            settings: settings
+                        )
+                        DialShortcutRow(
+                            title: "长按",
+                            action: .longPress,
                             settings: settings
                         )
 
@@ -1005,8 +1127,20 @@ struct SettingsView: View {
                                 settings: settings
                             )
                             DialShortcutRow(
-                                title: "按下",
+                                title: "单击",
                                 action: .press,
+                                layer: 2,
+                                settings: settings
+                            )
+                            DialShortcutRow(
+                                title: "双击",
+                                action: .doublePress,
+                                layer: 2,
+                                settings: settings
+                            )
+                            DialShortcutRow(
+                                title: "长按",
+                                action: .longPress,
                                 layer: 2,
                                 settings: settings
                             )
@@ -1015,7 +1149,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        Text("没有专属配置的应用使用“默认配置”。发送快捷键需要辅助功能权限。")
+                        Text("双击间隔约 320 ms；长按约 650 ms。没有专属配置的应用使用“默认配置”。发送快捷键需要辅助功能权限。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1106,6 +1240,7 @@ struct DialShortcutRow: View {
                         set: { settings.updateDialShortcut(action, layer: layer, kind: $0) }
                     )
                 ) {
+                    Text("无操作").tag("none")
                     Text("快捷键").tag("shortcut")
                     Text("向上滚动").tag("scrollUp")
                     Text("向下滚动").tag("scrollDown")
@@ -1180,6 +1315,8 @@ struct DialShortcutRow: View {
 
     private func actionLabel(_ shortcut: DialShortcut) -> String {
         switch shortcut.resolvedKind {
+        case "none":
+            return "无操作"
         case "scrollUp":
             return "滚轮 ↑"
         case "scrollDown":
