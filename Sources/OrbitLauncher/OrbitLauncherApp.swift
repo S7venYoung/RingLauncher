@@ -342,6 +342,7 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
     var bundleIdentifier: String
+    var rotationDegrees: Int? = nil
     var counterClockwise: DialShortcut
     var clockwise: DialShortcut
     var press: DialShortcut
@@ -357,6 +358,10 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
         [press, doublePress, longPress].contains {
             $0?.resolvedKind == "enterSecondLayer"
         }
+    }
+
+    var resolvedRotationDegrees: Int {
+        max(1, min(rotationDegrees ?? 18, 36))
     }
 
     func shortcut(
@@ -513,6 +518,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .system:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 9,
                 counterClockwise: action("volumeDown"),
                 clockwise: action("volumeUp"),
                 press: action("playPause"),
@@ -527,6 +533,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .browser:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 9,
                 counterClockwise: scrollUp,
                 clockwise: scrollDown,
                 press: enterLayer,
@@ -541,6 +548,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .finder:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 9,
                 counterClockwise: scrollUp,
                 clockwise: scrollDown,
                 press: enterLayer,
@@ -555,6 +563,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .codeEditor:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 9,
                 counterClockwise: scrollUp,
                 clockwise: scrollDown,
                 press: enterLayer,
@@ -569,6 +578,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .xcode:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 9,
                 counterClockwise: scrollUp,
                 clockwise: scrollDown,
                 press: enterLayer,
@@ -583,6 +593,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .photoshop:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 1,
                 counterClockwise: shortcut(kVK_ANSI_LeftBracket),
                 clockwise: shortcut(kVK_ANSI_RightBracket),
                 press: enterLayer,
@@ -597,6 +608,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .videoEditor:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 3,
                 counterClockwise: shortcut(kVK_LeftArrow),
                 clockwise: shortcut(kVK_RightArrow),
                 press: shortcut(kVK_Space),
@@ -611,6 +623,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .terminal:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 9,
                 counterClockwise: scrollUp,
                 clockwise: scrollDown,
                 press: enterLayer,
@@ -625,6 +638,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .media:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 18,
                 counterClockwise: action("previousTrack"),
                 clockwise: action("nextTrack"),
                 press: action("playPause"),
@@ -639,6 +653,7 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
         case .pdfReader:
             return DialAppProfile(
                 id: id, name: name, bundleIdentifier: bundleIdentifier,
+                rotationDegrees: 9,
                 counterClockwise: scrollUp,
                 clockwise: scrollDown,
                 press: enterLayer,
@@ -1013,6 +1028,15 @@ final class AppSettings: ObservableObject {
         saveDialProfiles()
     }
 
+    func updateSelectedDialRotationDegrees(_ degrees: Int) {
+        guard let index = dialProfiles.firstIndex(where: {
+            $0.id.uuidString == selectedDialProfileID
+        }) else { return }
+        dialProfiles[index].rotationDegrees = max(1, min(degrees, 36))
+        saveDialProfiles()
+        NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
+    }
+
     func addDialApplicationProfile() {
         let panel = NSOpenPanel()
         panel.title = "选择要配置 Surface Dial 的应用"
@@ -1057,6 +1081,7 @@ final class AppSettings: ObservableObject {
             bundleIdentifier: current.bundleIdentifier
         )
         saveDialProfiles()
+        NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
     }
 
     func removeSelectedDialProfile() {
@@ -1394,7 +1419,7 @@ struct SettingsView: View {
                             || !settings.surfaceDialPreventSleepEnabled
                     )
                     Stepper(
-                        "每圈步数：\(settings.surfaceDialStepsPerRotation)",
+                        "圆环精度：\(String(format: "%.1f", 360.0 / Double(settings.surfaceDialStepsPerRotation)))°/格（\(settings.surfaceDialStepsPerRotation) 格/圈）",
                         value: $settings.surfaceDialStepsPerRotation,
                         in: 10...40,
                         step: 2
@@ -1459,6 +1484,16 @@ struct SettingsView: View {
                                     .font(.system(.caption, design: .monospaced))
                                     .foregroundStyle(.secondary)
                             }
+                            Stepper(
+                                "旋转精度：\(profile.resolvedRotationDegrees)°/格（约 \(max(1, Int((360.0 / Double(profile.resolvedRotationDegrees)).rounded()))) 格/圈）",
+                                value: Binding(
+                                    get: {
+                                        settings.selectedDialProfile?.resolvedRotationDegrees ?? 18
+                                    },
+                                    set: { settings.updateSelectedDialRotationDegrees($0) }
+                                ),
+                                in: 1...36
+                            )
                         }
 
                         DialShortcutRow(

@@ -31,6 +31,7 @@ final class SurfaceDialManager: ObservableObject {
     private var keepAliveTimer: DispatchSourceTimer?
     private var appNapActivity: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
+    private var applicationActivationObserver: NSObjectProtocol?
 
     private init() {}
 
@@ -62,6 +63,7 @@ final class SurfaceDialManager: ObservableObject {
 
         let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         observeSystemWake()
+        observeApplicationActivation()
         logger.notice("Surface Dial HID manager started result=\(result, privacy: .public)")
     }
 
@@ -69,6 +71,7 @@ final class SurfaceDialManager: ObservableObject {
         guard running, let manager else { return }
         stopKeepAlive()
         stopObservingSystemWake()
+        stopObservingApplicationActivation()
         IOHIDManagerUnscheduleFromRunLoop(
             manager,
             CFRunLoopGetMain(),
@@ -185,7 +188,7 @@ final class SurfaceDialManager: ObservableObject {
         on device: IOHIDDevice,
         logSuccess: Bool = true
     ) -> IOReturn {
-        let steps = max(1, min(AppSettings.shared.surfaceDialStepsPerRotation, Int(UInt16.max)))
+        let steps = desiredStepsPerRotation()
         // IOHIDDeviceSetReport requires the report ID both as its
         // reportID argument and as the first byte when the device uses
         // multiple reports. Surface Dial's haptic feature report is ID 1.
@@ -245,6 +248,48 @@ final class SurfaceDialManager: ObservableObject {
         }
     }
 
+    private func observeApplicationActivation() {
+        guard applicationActivationObserver == nil else { return }
+        applicationActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      AppSettings.shared.surfaceDialControlMode == "direct",
+                      let device = self.device else {
+                    return
+                }
+                self.tickAccumulator = 0
+                self.configureHaptics(on: device)
+            }
+        }
+    }
+
+    private func stopObservingApplicationActivation() {
+        if let applicationActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(
+                applicationActivationObserver
+            )
+            self.applicationActivationObserver = nil
+        }
+    }
+
+    private func desiredStepsPerRotation() -> Int {
+        if AppSettings.shared.surfaceDialControlMode == "direct" {
+            let bundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            let degrees = AppSettings.shared
+                .dialProfile(for: bundleIdentifier)
+                .resolvedRotationDegrees
+            return max(1, min(Int((360.0 / Double(degrees)).rounded()), Int(UInt16.max)))
+        }
+        return max(
+            1,
+            min(AppSettings.shared.surfaceDialStepsPerRotation, Int(UInt16.max))
+        )
+    }
+
     fileprivate func process(reportID: UInt32, bytes: [UInt8]) {
         // Depending on the IOKit callback, the report ID can be included in
         // the byte buffer or supplied only through reportID.
@@ -268,7 +313,7 @@ final class SurfaceDialManager: ObservableObject {
         guard rawDelta != 0 else { return }
 
         tickAccumulator += Int(rawDelta)
-        let stepsPerRotation = max(1, AppSettings.shared.surfaceDialStepsPerRotation)
+        let stepsPerRotation = desiredStepsPerRotation()
         let ticksPerStep = max(1, resolution / stepsPerRotation)
         let logicalSteps = tickAccumulator / ticksPerStep
         guard logicalSteps != 0 else { return }
