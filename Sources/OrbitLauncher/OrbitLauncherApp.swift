@@ -2245,8 +2245,7 @@ final class RingModel: ObservableObject {
         apps = NSWorkspace.shared.runningApplications
             .filter {
                 $0.activationPolicy == .regular &&
-                $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
-                applicationHasSwitchableWindow($0)
+                $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
             }
             .sorted {
                 if $0.processIdentifier == frontmostPID { return true }
@@ -2609,12 +2608,29 @@ private func postCommandW() {
 }
 
 private func activateAndRestoreWindows(_ application: NSRunningApplication) {
+    // Opening an already-running application asks macOS to handle a reopen,
+    // matching a Dock icon click. Windowless apps can then create their welcome
+    // or initial window instead of only becoming the menu-bar owner.
+    if let bundleURL = application.bundleURL {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.createsNewApplicationInstance = false
+        NSWorkspace.shared.openApplication(
+            at: bundleURL,
+            configuration: configuration
+        ) { _, _ in }
+    }
+
     application.unhide()
     application.activate(options: [.activateAllWindows])
 
     let processIdentifier = application.processIdentifier
     restoreMinimizedWindows(of: processIdentifier)
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+        restoreMinimizedWindows(of: processIdentifier)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
         restoreMinimizedWindows(of: processIdentifier)
     }
 }
@@ -2656,55 +2672,6 @@ private func frontmostWindowIsFullScreen() -> Bool {
     return windowServerReportsFullScreenWindow(
         processIdentifier: application.processIdentifier
     )
-}
-
-private func applicationHasSwitchableWindow(
-    _ application: NSRunningApplication
-) -> Bool {
-    // Without Accessibility access we cannot reliably distinguish a windowless
-    // background process, so preserve the previous app-list behavior.
-    guard AXIsProcessTrusted() else { return true }
-
-    let applicationElement = AXUIElementCreateApplication(
-        application.processIdentifier
-    )
-    var windowsValue: CFTypeRef?
-    let result = AXUIElementCopyAttributeValue(
-        applicationElement,
-        kAXWindowsAttribute as CFString,
-        &windowsValue
-    )
-
-    // A transient AX failure should not make an application disappear. Only an
-    // authoritative empty window list is treated as windowless.
-    guard result == .success,
-          let windowsValue,
-          CFGetTypeID(windowsValue) == CFArrayGetTypeID() else {
-        return true
-    }
-
-    let windows = unsafeBitCast(windowsValue, to: CFArray.self)
-    if CFArrayGetCount(windows) > 0 {
-        return true
-    }
-
-    // Some applications do not expose AXWindows while their full-screen window
-    // lives in another Space. Window Server still knows about that window.
-    return windowServerHasSwitchableWindow(
-        processIdentifier: application.processIdentifier
-    )
-}
-
-private func windowServerHasSwitchableWindow(
-    processIdentifier: pid_t
-) -> Bool {
-    windowServerWindows(options: [.optionAll, .excludeDesktopElements])
-        .contains { window in
-            window.processIdentifier == processIdentifier
-                && window.layer == 0
-                && window.alpha > 0
-                && windowMatchesFullScreenSize(window)
-        }
 }
 
 private func windowServerReportsFullScreenWindow(
