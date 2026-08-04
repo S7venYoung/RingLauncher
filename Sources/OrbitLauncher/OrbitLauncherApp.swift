@@ -2419,6 +2419,8 @@ private func performExperimentalBrowserZoom(direction: Int) {
     let source: String
     if bundleIdentifier.contains("safari") {
         source = "tell application \"Safari\" to do JavaScript \"\(escapedJavaScript)\" in current tab of front window"
+    } else if bundleIdentifier == "com.microsoft.edgemac" {
+        source = "tell application \"Microsoft Edge\" to execute active tab of front window javascript \"\(escapedJavaScript)\""
     } else if bundleIdentifier.contains("chrome") {
         source = "tell application \"Google Chrome\" to execute active tab of front window javascript \"\(escapedJavaScript)\""
     } else {
