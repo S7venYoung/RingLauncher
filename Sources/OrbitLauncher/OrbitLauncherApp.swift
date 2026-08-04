@@ -2166,7 +2166,8 @@ final class RingModel: ObservableObject {
         apps = NSWorkspace.shared.runningApplications
             .filter {
                 $0.activationPolicy == .regular &&
-                $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+                $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
+                applicationHasSwitchableWindow($0)
             }
             .sorted {
                 if $0.processIdentifier == frontmostPID { return true }
@@ -2520,6 +2521,35 @@ private func activateAndRestoreWindows(_ application: NSRunningApplication) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
         restoreMinimizedWindows(of: processIdentifier)
     }
+}
+
+private func applicationHasSwitchableWindow(
+    _ application: NSRunningApplication
+) -> Bool {
+    // Without Accessibility access we cannot reliably distinguish a windowless
+    // background process, so preserve the previous app-list behavior.
+    guard AXIsProcessTrusted() else { return true }
+
+    let applicationElement = AXUIElementCreateApplication(
+        application.processIdentifier
+    )
+    var windowsValue: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(
+        applicationElement,
+        kAXWindowsAttribute as CFString,
+        &windowsValue
+    )
+
+    // A transient AX failure should not make an application disappear. Only an
+    // authoritative empty window list is treated as windowless.
+    guard result == .success,
+          let windowsValue,
+          CFGetTypeID(windowsValue) == CFArrayGetTypeID() else {
+        return true
+    }
+
+    let windows = unsafeBitCast(windowsValue, to: CFArray.self)
+    return CFArrayGetCount(windows) > 0
 }
 
 private func restoreMinimizedWindows(of processIdentifier: pid_t) {
