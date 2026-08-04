@@ -45,6 +45,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toggleObserver: NSObjectProtocol?
     private var settingsObserver: NSObjectProtocol?
     private let surfaceDial = SurfaceDialManager.shared
+    private var activeDialSecondLayerProfileID: UUID?
+    private var dialSecondLayerExpiresAt: TimeInterval = 0
+    private let dialSecondLayerTimeout: TimeInterval = 5
     private let dialLogger = Logger(
         subsystem: "com.s7venyoung.orbitlauncher",
         category: "DialDirectControl"
@@ -126,7 +129,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let frontmostApplication = NSWorkspace.shared.frontmostApplication
         let bundleIdentifier = frontmostApplication?.bundleIdentifier
         let profile = AppSettings.shared.dialProfile(for: bundleIdentifier)
-        let shortcut = profile.shortcut(for: action)
+        let now = Date.timeIntervalSinceReferenceDate
+        let secondLayerIsActive =
+            activeDialSecondLayerProfileID == profile.id
+            && now < dialSecondLayerExpiresAt
+        if !secondLayerIsActive {
+            activeDialSecondLayerProfileID = nil
+            dialSecondLayerExpiresAt = 0
+        }
+
+        let layer = secondLayerIsActive ? 2 : 1
+        let shortcut = profile.shortcut(for: action, layer: layer)
+        if shortcut.resolvedKind == "enterSecondLayer" {
+            activeDialSecondLayerProfileID = profile.id
+            dialSecondLayerExpiresAt = now + dialSecondLayerTimeout
+            dialLogger.notice(
+                "Direct Dial entered second layer profile=\(profile.name, privacy: .public)"
+            )
+            return
+        }
+        if shortcut.resolvedKind == "exitSecondLayer" {
+            activeDialSecondLayerProfileID = nil
+            dialSecondLayerExpiresAt = 0
+            dialLogger.notice(
+                "Direct Dial exited second layer profile=\(profile.name, privacy: .public)"
+            )
+            return
+        }
+
+        if secondLayerIsActive {
+            dialSecondLayerExpiresAt = now + dialSecondLayerTimeout
+        }
         switch shortcut.resolvedKind {
         case "scrollUp":
             postScrollWheel(lines: shortcut.resolvedScrollLines)
@@ -178,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             postKeyboardShortcut(shortcut)
         }
         dialLogger.notice(
-            "Direct Dial action=\(action.rawValue, privacy: .public) kind=\(shortcut.resolvedKind, privacy: .public) app=\(bundleIdentifier ?? "unknown", privacy: .public) profile=\(profile.name, privacy: .public)"
+            "Direct Dial action=\(action.rawValue, privacy: .public) layer=\(layer, privacy: .public) kind=\(shortcut.resolvedKind, privacy: .public) app=\(bundleIdentifier ?? "unknown", privacy: .public) profile=\(profile.name, privacy: .public)"
         )
     }
 }
@@ -236,8 +269,38 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
     var counterClockwise: DialShortcut
     var clockwise: DialShortcut
     var press: DialShortcut
+    var secondLayerCounterClockwise: DialShortcut? = nil
+    var secondLayerClockwise: DialShortcut? = nil
+    var secondLayerPress: DialShortcut? = nil
 
-    func shortcut(for action: DialControlAction) -> DialShortcut {
+    func shortcut(
+        for action: DialControlAction,
+        layer: Int = 1
+    ) -> DialShortcut {
+        if layer == 2 {
+            switch action {
+            case .counterClockwise:
+                return secondLayerCounterClockwise
+                    ?? DialShortcut(
+                        keyCode: kVK_ANSI_Minus,
+                        modifiers: cmdKey
+                    )
+            case .clockwise:
+                return secondLayerClockwise
+                    ?? DialShortcut(
+                        keyCode: kVK_ANSI_Equal,
+                        modifiers: cmdKey
+                    )
+            case .press:
+                return secondLayerPress
+                    ?? DialShortcut(
+                        keyCode: kVK_Escape,
+                        modifiers: 0,
+                        kind: "exitSecondLayer"
+                    )
+            }
+        }
+
         switch action {
         case .counterClockwise:
             return counterClockwise
@@ -473,13 +536,17 @@ final class AppSettings: ObservableObject {
             ?? dialProfiles[0]
     }
 
-    func dialShortcut(for action: DialControlAction) -> DialShortcut {
-        selectedDialProfile?.shortcut(for: action)
+    func dialShortcut(
+        for action: DialControlAction,
+        layer: Int = 1
+    ) -> DialShortcut {
+        selectedDialProfile?.shortcut(for: action, layer: layer)
             ?? DialShortcut(keyCode: kVK_Space, modifiers: 0)
     }
 
     func updateDialShortcut(
         _ action: DialControlAction,
+        layer: Int = 1,
         keyCode: Int? = nil,
         modifiers: Int? = nil,
         kind: String? = nil,
@@ -488,7 +555,7 @@ final class AppSettings: ObservableObject {
         guard let index = dialProfiles.firstIndex(where: {
             $0.id.uuidString == selectedDialProfileID
         }) else { return }
-        var shortcut = dialProfiles[index].shortcut(for: action)
+        var shortcut = dialProfiles[index].shortcut(for: action, layer: layer)
         if let keyCode {
             shortcut.keyCode = keyCode
         }
@@ -501,13 +568,24 @@ final class AppSettings: ObservableObject {
         if let scrollLines {
             shortcut.scrollLines = max(1, scrollLines)
         }
-        switch action {
-        case .counterClockwise:
-            dialProfiles[index].counterClockwise = shortcut
-        case .clockwise:
-            dialProfiles[index].clockwise = shortcut
-        case .press:
-            dialProfiles[index].press = shortcut
+        if layer == 2 {
+            switch action {
+            case .counterClockwise:
+                dialProfiles[index].secondLayerCounterClockwise = shortcut
+            case .clockwise:
+                dialProfiles[index].secondLayerClockwise = shortcut
+            case .press:
+                dialProfiles[index].secondLayerPress = shortcut
+            }
+        } else {
+            switch action {
+            case .counterClockwise:
+                dialProfiles[index].counterClockwise = shortcut
+            case .clockwise:
+                dialProfiles[index].clockwise = shortcut
+            case .press:
+                dialProfiles[index].press = shortcut
+            }
         }
         saveDialProfiles()
     }
@@ -909,6 +987,34 @@ struct SettingsView: View {
                             settings: settings
                         )
 
+                        if settings.dialShortcut(for: .press).resolvedKind
+                            == "enterSecondLayer" {
+                            Divider()
+                            Text("第二层")
+                                .font(.headline)
+                            DialShortcutRow(
+                                title: "逆时针",
+                                action: .counterClockwise,
+                                layer: 2,
+                                settings: settings
+                            )
+                            DialShortcutRow(
+                                title: "顺时针",
+                                action: .clockwise,
+                                layer: 2,
+                                settings: settings
+                            )
+                            DialShortcutRow(
+                                title: "按下",
+                                action: .press,
+                                layer: 2,
+                                settings: settings
+                            )
+                            Text("第二层连续 5 秒无操作会自动返回第一层。浏览器默认是 ⌘− 缩小、⌘= 放大。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         Text("没有专属配置的应用使用“默认配置”。发送快捷键需要辅助功能权限。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -984,10 +1090,11 @@ struct SettingsView: View {
 struct DialShortcutRow: View {
     let title: String
     let action: DialControlAction
+    var layer: Int = 1
     @ObservedObject var settings: AppSettings
 
     var body: some View {
-        let shortcut = settings.dialShortcut(for: action)
+        let shortcut = settings.dialShortcut(for: action, layer: layer)
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
@@ -995,8 +1102,8 @@ struct DialShortcutRow: View {
                 Picker(
                     "动作类型",
                     selection: Binding(
-                        get: { settings.dialShortcut(for: action).resolvedKind },
-                        set: { settings.updateDialShortcut(action, kind: $0) }
+                        get: { settings.dialShortcut(for: action, layer: layer).resolvedKind },
+                        set: { settings.updateDialShortcut(action, layer: layer, kind: $0) }
                     )
                 ) {
                     Text("快捷键").tag("shortcut")
@@ -1015,6 +1122,11 @@ struct DialShortcutRow: View {
                     Text("显示桌面").tag("showDesktop")
                     Text("锁定屏幕").tag("lockScreen")
                     Text("截图工具").tag("screenshot")
+                    if layer == 1 {
+                        Text("进入第二层").tag("enterSecondLayer")
+                    } else {
+                        Text("返回第一层").tag("exitSecondLayer")
+                    }
                 }
                 .labelsHidden()
                 Spacer()
@@ -1029,8 +1141,8 @@ struct DialShortcutRow: View {
                     Picker(
                         "修饰键",
                         selection: Binding(
-                            get: { settings.dialShortcut(for: action).modifiers },
-                            set: { settings.updateDialShortcut(action, modifiers: $0) }
+                            get: { settings.dialShortcut(for: action, layer: layer).modifiers },
+                            set: { settings.updateDialShortcut(action, layer: layer, modifiers: $0) }
                         )
                     ) {
                         ForEach(HotKeyModifier.directOptions) { option in
@@ -1041,8 +1153,8 @@ struct DialShortcutRow: View {
                     Picker(
                         "按键",
                         selection: Binding(
-                            get: { settings.dialShortcut(for: action).keyCode },
-                            set: { settings.updateDialShortcut(action, keyCode: $0) }
+                            get: { settings.dialShortcut(for: action, layer: layer).keyCode },
+                            set: { settings.updateDialShortcut(action, layer: layer, keyCode: $0) }
                         )
                     ) {
                         ForEach(HotKeyKey.options) { key in
@@ -1056,8 +1168,8 @@ struct DialShortcutRow: View {
                 Stepper(
                     "每格滚动：\(shortcut.resolvedScrollLines) 行",
                     value: Binding(
-                        get: { settings.dialShortcut(for: action).resolvedScrollLines },
-                        set: { settings.updateDialShortcut(action, scrollLines: $0) }
+                        get: { settings.dialShortcut(for: action, layer: layer).resolvedScrollLines },
+                        set: { settings.updateDialShortcut(action, layer: layer, scrollLines: $0) }
                     ),
                     in: 1...12
                 )
@@ -1098,6 +1210,10 @@ struct DialShortcutRow: View {
             return "锁屏"
         case "screenshot":
             return "截图"
+        case "enterSecondLayer":
+            return "进入第二层"
+        case "exitSecondLayer":
+            return "返回第一层"
         default:
             let modifier = HotKeyModifier.directOptions.first {
                 $0.value == shortcut.modifiers
