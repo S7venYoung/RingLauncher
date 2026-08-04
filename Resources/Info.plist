@@ -24,6 +24,8 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>OrbitLauncher 需要控制当前浏览器，以提供由 Surface Dial 驱动的连续平滑缩放。</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 S7venYoung</string>
 </dict>
