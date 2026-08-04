@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import IOKit.hid
 import OSLog
@@ -23,10 +24,13 @@ final class SurfaceDialManager: ObservableObject {
     private var device: IOHIDDevice?
     private var running = false
     private var hapticsEnabled = true
+    private var preventSleepEnabled = true
+    private var keepAliveInterval: TimeInterval = 15
     private var lastButtonPressed = false
     private var tickAccumulator = 0
-    private var keepAliveTimer: Timer?
-    private let keepAliveInterval: TimeInterval = 120
+    private var keepAliveTimer: DispatchSourceTimer?
+    private var appNapActivity: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
 
     private init() {}
 
@@ -57,12 +61,14 @@ final class SurfaceDialManager: ObservableObject {
         )
 
         let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        observeSystemWake()
         logger.notice("Surface Dial HID manager started result=\(result, privacy: .public)")
     }
 
     func stop() {
         guard running, let manager else { return }
         stopKeepAlive()
+        stopObservingSystemWake()
         IOHIDManagerUnscheduleFromRunLoop(
             manager,
             CFRunLoopGetMain(),
@@ -84,13 +90,26 @@ final class SurfaceDialManager: ObservableObject {
         configureHaptics(on: device)
     }
 
+    func configureSleepPrevention(enabled: Bool, interval: Int) {
+        preventSleepEnabled = enabled
+        keepAliveInterval = TimeInterval(max(5, min(interval, 120)))
+        guard running, device != nil else { return }
+        if enabled {
+            startKeepAlive()
+        } else {
+            stopKeepAlive()
+        }
+    }
+
     fileprivate func deviceAdded(_ device: IOHIDDevice) {
         self.device = device
         resolution = readResolution(from: device) ?? 360
         tickAccumulator = 0
         isConnected = true
         configureHaptics(on: device)
-        startKeepAlive()
+        if preventSleepEnabled {
+            startKeepAlive()
+        }
         logger.notice("Surface Dial connected resolution=\(self.resolution, privacy: .public) ticks/rev")
     }
 
@@ -107,30 +126,65 @@ final class SurfaceDialManager: ObservableObject {
 
     private func startKeepAlive() {
         stopKeepAlive()
-        let timer = Timer(timeInterval: keepAliveInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.sendKeepAlive()
-            }
+        guard preventSleepEnabled else { return }
+        appNapActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "保持 Surface Dial HID 通信活跃"
+        )
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(
+            deadline: .now() + keepAliveInterval,
+            repeating: keepAliveInterval,
+            leeway: .milliseconds(500)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.sendKeepAlive(reason: "timer")
         }
         keepAliveTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
+        timer.resume()
         logger.notice(
             "Surface Dial keep-alive started interval=\(self.keepAliveInterval, privacy: .public)s"
         )
     }
 
     private func stopKeepAlive() {
-        keepAliveTimer?.invalidate()
+        keepAliveTimer?.setEventHandler {}
+        keepAliveTimer?.cancel()
         keepAliveTimer = nil
+        if let appNapActivity {
+            ProcessInfo.processInfo.endActivity(appNapActivity)
+            self.appNapActivity = nil
+        }
     }
 
-    private func sendKeepAlive() {
+    private func sendKeepAlive(reason: String) {
         guard running, isConnected, let device else { return }
-        configureHaptics(on: device)
-        logger.debug("Surface Dial keep-alive sent")
+        var readBuffer = [UInt8](repeating: 0, count: 64)
+        var readLength = readBuffer.count
+        let readResult = IOHIDDeviceGetReport(
+            device,
+            kIOHIDReportTypeFeature,
+            CFIndex(1),
+            &readBuffer,
+            &readLength
+        )
+        let writeResult = configureHaptics(on: device, logSuccess: false)
+        if readResult == kIOReturnSuccess || writeResult == kIOReturnSuccess {
+            logger.debug(
+                "Surface Dial keep-alive reason=\(reason, privacy: .public) read=\(readResult, privacy: .public) write=\(writeResult, privacy: .public)"
+            )
+        } else {
+            logger.error(
+                "Surface Dial keep-alive failed reason=\(reason, privacy: .public) read=\(readResult, privacy: .public) write=\(writeResult, privacy: .public)"
+            )
+        }
     }
 
-    private func configureHaptics(on device: IOHIDDevice) {
+    @discardableResult
+    private func configureHaptics(
+        on device: IOHIDDevice,
+        logSuccess: Bool = true
+    ) -> IOReturn {
         let steps = max(1, min(AppSettings.shared.surfaceDialStepsPerRotation, Int(UInt16.max)))
         // IOHIDDeviceSetReport requires the report ID both as its
         // reportID argument and as the first byte when the device uses
@@ -153,13 +207,41 @@ final class SurfaceDialManager: ObservableObject {
             CFIndex(report.count)
         )
         if result == kIOReturnSuccess {
-            logger.notice(
-                "Surface Dial haptics configured enabled=\(self.hapticsEnabled, privacy: .public) steps/rev=\(steps, privacy: .public)"
-            )
+            if logSuccess {
+                logger.notice(
+                    "Surface Dial haptics configured enabled=\(self.hapticsEnabled, privacy: .public) steps/rev=\(steps, privacy: .public)"
+                )
+            }
         } else {
             logger.error(
                 "Surface Dial haptics configuration failed result=\(result, privacy: .public)"
             )
+        }
+        return result
+    }
+
+    private func observeSystemWake() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.tickAccumulator = 0
+                self.sendKeepAlive(reason: "systemWake")
+                if self.preventSleepEnabled {
+                    self.startKeepAlive()
+                }
+            }
+        }
+    }
+
+    private func stopObservingSystemWake() {
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
         }
     }
 

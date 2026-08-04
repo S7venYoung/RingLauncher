@@ -127,6 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         surfaceDial.setHapticsEnabled(settings.surfaceDialHapticsEnabled)
+        surfaceDial.configureSleepPrevention(
+            enabled: settings.surfaceDialPreventSleepEnabled,
+            interval: settings.surfaceDialKeepAliveSeconds
+        )
         if settings.surfaceDialEnabled {
             surfaceDial.start()
         } else {
@@ -751,6 +755,24 @@ final class AppSettings: ObservableObject {
             NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
         }
     }
+    @Published var surfaceDialPreventSleepEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialPreventSleepEnabled,
+                forKey: Keys.surfaceDialPreventSleepEnabled
+            )
+            NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
+        }
+    }
+    @Published var surfaceDialKeepAliveSeconds: Int {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialKeepAliveSeconds,
+                forKey: Keys.surfaceDialKeepAliveSeconds
+            )
+            NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
+        }
+    }
     @Published var surfaceDialControlMode: String {
         didSet {
             UserDefaults.standard.set(surfaceDialControlMode, forKey: Keys.surfaceDialControlMode)
@@ -792,6 +814,8 @@ final class AppSettings: ObservableObject {
         static let surfaceDialEnabled = "surfaceDialEnabled"
         static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
         static let surfaceDialHapticsEnabled = "surfaceDialHapticsEnabled"
+        static let surfaceDialPreventSleepEnabled = "surfaceDialPreventSleepEnabled"
+        static let surfaceDialKeepAliveSeconds = "surfaceDialKeepAliveSeconds"
         static let surfaceDialControlMode = "surfaceDialControlMode"
         static let dialProfiles = "dialProfiles"
         static let selectedDialProfileID = "selectedDialProfileID"
@@ -820,6 +844,10 @@ final class AppSettings: ObservableObject {
             defaults.object(forKey: Keys.surfaceDialStepsPerRotation) as? Int ?? 20
         surfaceDialHapticsEnabled =
             defaults.object(forKey: Keys.surfaceDialHapticsEnabled) as? Bool ?? true
+        surfaceDialPreventSleepEnabled =
+            defaults.object(forKey: Keys.surfaceDialPreventSleepEnabled) as? Bool ?? true
+        surfaceDialKeepAliveSeconds =
+            defaults.object(forKey: Keys.surfaceDialKeepAliveSeconds) as? Int ?? 15
         surfaceDialControlMode =
             defaults.string(forKey: Keys.surfaceDialControlMode) ?? "ring"
         let savedDialProfiles: [DialAppProfile]
@@ -1318,6 +1346,21 @@ struct SettingsView: View {
                     .disabled(!settings.surfaceDialEnabled)
                     Toggle("启用触觉反馈", isOn: $settings.surfaceDialHapticsEnabled)
                         .disabled(!settings.surfaceDialEnabled)
+                    Toggle(
+                        "主动阻止 Dial 休眠（实验性）",
+                        isOn: $settings.surfaceDialPreventSleepEnabled
+                    )
+                    .disabled(!settings.surfaceDialEnabled)
+                    Stepper(
+                        "保活间隔：\(settings.surfaceDialKeepAliveSeconds) 秒",
+                        value: $settings.surfaceDialKeepAliveSeconds,
+                        in: 5...60,
+                        step: 5
+                    )
+                    .disabled(
+                        !settings.surfaceDialEnabled
+                            || !settings.surfaceDialPreventSleepEnabled
+                    )
                     Stepper(
                         "每圈步数：\(settings.surfaceDialStepsPerRotation)",
                         value: $settings.surfaceDialStepsPerRotation,
@@ -1339,6 +1382,9 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     Text("触觉反馈开启后，Dial 会按每圈步数产生对应的物理刻度震动。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("主动保活会定期读写静默 HID 报告，并避免应用被 App Nap 暂停；不会阻止 Mac 正常睡眠，但会缩短 Dial 电池续航。建议先使用 15 秒。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
