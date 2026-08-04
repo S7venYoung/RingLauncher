@@ -239,6 +239,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             postScrollWheel(lines: shortcut.resolvedScrollLines)
         case "scrollDown":
             postScrollWheel(lines: -shortcut.resolvedScrollLines)
+        case "scrollLeft":
+            postScrollWheel(
+                lines: shortcut.resolvedScrollLines,
+                axis: .horizontal
+            )
+        case "scrollRight":
+            postScrollWheel(
+                lines: -shortcut.resolvedScrollLines,
+                axis: .horizontal
+            )
         case "volumeUp":
             postSystemDefinedKey(0)
         case "volumeDown":
@@ -959,6 +969,17 @@ final class AppSettings: ObservableObject {
             ?? dialProfiles.first
     }
 
+    var selectedDialPresetName: String {
+        guard let profile = selectedDialProfile else { return "自定义" }
+        return DialProfilePreset.allCases.first { preset in
+            profile == preset.makeProfile(
+                id: profile.id,
+                name: profile.name,
+                bundleIdentifier: profile.bundleIdentifier
+            )
+        }?.name ?? "自定义"
+    }
+
     func dialProfile(for bundleIdentifier: String?) -> DialAppProfile {
         if let bundleIdentifier,
            let profile = dialProfiles.first(where: {
@@ -1462,7 +1483,7 @@ struct SettingsView: View {
                             Button("添加应用…") {
                                 settings.addDialApplicationProfile()
                             }
-                            Menu("套用模板…") {
+                            Menu("模板：\(settings.selectedDialPresetName)") {
                                 ForEach(DialProfilePreset.allCases) { preset in
                                     Button("\(preset.name) — \(preset.summary)") {
                                         settings.applyDialPreset(preset)
@@ -1663,6 +1684,8 @@ struct DialShortcutRow: View {
                     Text("快捷键").tag("shortcut")
                     Text("向上滚动").tag("scrollUp")
                     Text("向下滚动").tag("scrollDown")
+                    Text("向左滚动").tag("scrollLeft")
+                    Text("向右滚动").tag("scrollRight")
                     Text("增大音量").tag("volumeUp")
                     Text("减小音量").tag("volumeDown")
                     Text("静音/取消静音").tag("mute")
@@ -1720,9 +1743,13 @@ struct DialShortcutRow: View {
                     .labelsHidden()
                 }
             } else if shortcut.resolvedKind == "scrollUp"
-                        || shortcut.resolvedKind == "scrollDown" {
+                        || shortcut.resolvedKind == "scrollDown"
+                        || shortcut.resolvedKind == "scrollLeft"
+                        || shortcut.resolvedKind == "scrollRight" {
+                let scrollUnit = shortcut.resolvedKind == "scrollLeft"
+                    || shortcut.resolvedKind == "scrollRight" ? "列" : "行"
                 Stepper(
-                    "每格滚动：\(shortcut.resolvedScrollLines) 行",
+                    "每格滚动：\(shortcut.resolvedScrollLines) \(scrollUnit)",
                     value: Binding(
                         get: { settings.dialShortcut(for: action, layer: layer).resolvedScrollLines },
                         set: { settings.updateDialShortcut(action, layer: layer, scrollLines: $0) }
@@ -1742,6 +1769,10 @@ struct DialShortcutRow: View {
             return "滚轮 ↑"
         case "scrollDown":
             return "滚轮 ↓"
+        case "scrollLeft":
+            return "滚轮 ←"
+        case "scrollRight":
+            return "滚轮 →"
         case "volumeUp":
             return "音量 +"
         case "volumeDown":
@@ -2319,7 +2350,12 @@ private func postSystemDefinedKey(_ keyType: Int) {
     keyUp?.cgEvent?.post(tap: .cghidEventTap)
 }
 
-private func postScrollWheel(lines: Int) {
+private enum ScrollAxis: Equatable {
+    case vertical
+    case horizontal
+}
+
+private func postScrollWheel(lines: Int, axis: ScrollAxis = .vertical) {
     // CGEvent's wheel delta represents the physical wheel direction. Convert the
     // user-facing page direction so it stays correct with Natural Scrolling on
     // or off.
@@ -2327,13 +2363,15 @@ private func postScrollWheel(lines: Int) {
         forKey: "com.apple.swipescrolldirection"
     ) as? Bool ?? true
     let wheelLines = naturalScrolling ? -lines : lines
+    let verticalLines = axis == .vertical ? wheelLines : 0
+    let horizontalLines = axis == .horizontal ? wheelLines : 0
     guard let source = CGEventSource(stateID: .hidSystemState),
           let event = CGEvent(
               scrollWheelEvent2Source: source,
               units: .line,
               wheelCount: 1,
-              wheel1: Int32(wheelLines),
-              wheel2: 0,
+              wheel1: Int32(verticalLines),
+              wheel2: Int32(horizontalLines),
               wheel3: 0
           ) else {
         return
