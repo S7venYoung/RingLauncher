@@ -281,6 +281,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     modifiers: shiftKey | cmdKey
                 )
             )
+        case "browserZoomIn":
+            performExperimentalBrowserZoom(direction: 1)
+        case "browserZoomOut":
+            performExperimentalBrowserZoom(direction: -1)
         default:
             postKeyboardShortcut(shortcut)
         }
@@ -539,8 +543,8 @@ enum DialProfilePreset: String, CaseIterable, Identifiable {
                 press: enterLayer,
                 doublePress: shortcut(kVK_ANSI_L, cmdKey),
                 longPress: shortcut(kVK_ANSI_R, cmdKey),
-                secondLayerCounterClockwise: zoomOut,
-                secondLayerClockwise: zoomIn,
+                secondLayerCounterClockwise: action("browserZoomOut"),
+                secondLayerClockwise: action("browserZoomIn"),
                 secondLayerPress: exitLayer,
                 secondLayerDoublePress: shortcut(kVK_ANSI_LeftBracket, cmdKey),
                 secondLayerLongPress: shortcut(kVK_ANSI_RightBracket, cmdKey)
@@ -1564,6 +1568,9 @@ struct SettingsView: View {
                         Text("双击间隔约 320 ms；长按约 650 ms。没有专属配置的应用使用“默认配置”。发送快捷键需要辅助功能权限。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Text("浏览器连续缩放会在 Safari 或 Chrome 页面内以约 4% 的小步进平滑缩放；Safari 需要开启“开发 → 允许来自 Apple 事件的 JavaScript”，首次使用还会请求自动化权限。执行失败会自动回退到 ⌘+/⌘−。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -1669,6 +1676,8 @@ struct DialShortcutRow: View {
                     Text("显示桌面").tag("showDesktop")
                     Text("锁定屏幕").tag("lockScreen")
                     Text("截图工具").tag("screenshot")
+                    Text("浏览器连续放大（实验性）").tag("browserZoomIn")
+                    Text("浏览器连续缩小（实验性）").tag("browserZoomOut")
                     if layer == 1 {
                         Text("进入第二层").tag("enterSecondLayer")
                     } else {
@@ -1759,6 +1768,10 @@ struct DialShortcutRow: View {
             return "锁屏"
         case "screenshot":
             return "截图"
+        case "browserZoomIn":
+            return "浏览器缩放 +"
+        case "browserZoomOut":
+            return "浏览器缩放 −"
         case "enterSecondLayer":
             return "进入第二层"
         case "exitSecondLayer":
@@ -2353,6 +2366,82 @@ private func postKeyboardShortcut(_ shortcut: DialShortcut) {
     keyUp.flags = flags
     keyDown.post(tap: .cghidEventTap)
     keyUp.post(tap: .cghidEventTap)
+}
+
+private let browserZoomLogger = Logger(
+    subsystem: "com.s7venyoung.orbitlauncher",
+    category: "BrowserZoom"
+)
+
+@MainActor
+private func performExperimentalBrowserZoom(direction: Int) {
+    let fallback = DialShortcut(
+        keyCode: direction > 0 ? kVK_ANSI_Equal : kVK_ANSI_Minus,
+        modifiers: cmdKey
+    )
+    guard let application = NSWorkspace.shared.frontmostApplication,
+          let bundleIdentifier = application.bundleIdentifier?.lowercased() else {
+        postKeyboardShortcut(fallback)
+        return
+    }
+
+    let delta = direction > 0 ? 0.04 : -0.04
+    let javaScript = """
+    (function() {
+      const root = document.documentElement;
+      const current = parseFloat(getComputedStyle(root).zoom) || 1;
+      const base = Number.isFinite(window.__ringLauncherZoomTarget)
+        ? window.__ringLauncherZoomTarget : current;
+      window.__ringLauncherZoomTarget = Math.max(0.5, Math.min(3.0, base + \(delta)));
+      if (window.__ringLauncherZoomAnimating) return window.__ringLauncherZoomTarget;
+      window.__ringLauncherZoomAnimating = true;
+      function animateZoom() {
+        const value = parseFloat(getComputedStyle(root).zoom) || 1;
+        const target = window.__ringLauncherZoomTarget;
+        const next = value + (target - value) * 0.38;
+        if (Math.abs(target - next) < 0.002) {
+          root.style.zoom = String(target);
+          window.__ringLauncherZoomAnimating = false;
+          return;
+        }
+        root.style.zoom = String(next);
+        requestAnimationFrame(animateZoom);
+      }
+      requestAnimationFrame(animateZoom);
+      return window.__ringLauncherZoomTarget;
+    })();
+    """
+    let escapedJavaScript = javaScript
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: " ")
+
+    let source: String
+    if bundleIdentifier.contains("safari") {
+        source = "tell application \"Safari\" to do JavaScript \"\(escapedJavaScript)\" in current tab of front window"
+    } else if bundleIdentifier.contains("chrome") {
+        source = "tell application \"Google Chrome\" to execute active tab of front window javascript \"\(escapedJavaScript)\""
+    } else {
+        postKeyboardShortcut(fallback)
+        return
+    }
+
+    var error: NSDictionary?
+    guard let script = NSAppleScript(source: source) else {
+        postKeyboardShortcut(fallback)
+        return
+    }
+    script.executeAndReturnError(&error)
+    if let error {
+        browserZoomLogger.error(
+            "Experimental browser zoom failed app=\(bundleIdentifier, privacy: .public) error=\(error.description, privacy: .public); using shortcut fallback"
+        )
+        postKeyboardShortcut(fallback)
+    } else {
+        browserZoomLogger.debug(
+            "Experimental browser zoom direction=\(direction, privacy: .public) app=\(bundleIdentifier, privacy: .public)"
+        )
+    }
 }
 
 private func postCommandW() {
