@@ -1958,6 +1958,8 @@ private func fourCC(_ value: String) -> OSType {
     value.utf8.reduce(0) { ($0 << 8) + OSType($1) }
 }
 
+private let ringPanelSize: CGFloat = 600
+
 @MainActor
 final class RingPanelController {
     private let logger = Logger(
@@ -1976,10 +1978,17 @@ final class RingPanelController {
     private var wheelDetentProgress = 0
     private var lastWheelSelectionTime: TimeInterval = 0
     private var inactivityDismissWorkItem: DispatchWorkItem?
+    private var prewarmWorkItem: DispatchWorkItem?
+    private var isPrewarming = false
 
     init() {
         panel = RingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: ringPanelSize,
+                height: ringPanelSize
+            ),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -1995,16 +2004,17 @@ final class RingPanelController {
 
         model.dismiss = { [weak self] in self?.hide() }
         model.activity = { [weak self] in self?.resetInactivityTimer() }
+        prewarmPanel()
     }
 
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panel.isVisible && !isPrewarming }
 
     func toggle() {
-        panel.isVisible ? hide() : show()
+        isVisible ? hide() : show()
     }
 
     func handleSurfaceDialRotation(_ direction: Int) {
-        if !panel.isVisible {
+        if !isVisible {
             show()
             logger.notice("Surface Dial rotation opened ring")
             return
@@ -2017,7 +2027,7 @@ final class RingPanelController {
 
     func handleSurfaceDialButton(pressed: Bool) {
         guard pressed else { return }
-        if panel.isVisible {
+        if isVisible {
             model.performSelected()
         } else {
             show()
@@ -2025,44 +2035,43 @@ final class RingPanelController {
     }
 
     func showForSurfaceDial() {
-        guard !panel.isVisible else { return }
+        guard !isVisible else { return }
         show()
     }
 
     private func show() {
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        finishPrewarming()
+
         // AppKit may order out a transient panel without calling hide().
         // Remove any stale monitors before adding a new pair so one physical
         // wheel event is never handled by multiple retained callbacks.
         removeInputMonitors()
         resetWheelDetector()
 
-        NSApp.activate(ignoringOtherApps: true)
+        guard positionPanel() else { return }
+        let positionedAt = CFAbsoluteTimeGetCurrent()
+
         model.reloadApps()
         model.goBack()
         model.resetSelection()
         model.presentationID = UUID()
+        let modelReadyAt = CFAbsoluteTimeGetCurrent()
 
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
-        guard let screen else { return }
-        let visibleFrame = screen.visibleFrame
-        let size = panel.frame.size
-        let origin: NSPoint
-        if AppSettings.shared.ringPosition == "screenCenter" {
-            origin = NSPoint(
-                x: screen.frame.midX - size.width / 2,
-                y: screen.frame.midY - size.height / 2
-            )
-        } else {
-            origin = NSPoint(
-                x: min(max(mouse.x - size.width / 2, visibleFrame.minX), visibleFrame.maxX - size.width),
-                y: min(max(mouse.y - size.height / 2, visibleFrame.minY), visibleFrame.maxY - size.height)
-            )
-        }
-        panel.setFrameOrigin(origin)
-        panel.makeKeyAndOrderFront(nil)
+        // Ordering the high-level panel first lets WindowServer begin presenting
+        // the already-positioned glass surface without waiting for app focus.
+        panel.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKey()
         resetInactivityTimer()
-        logger.notice("Ring shown; keyWindow=\(self.panel.isKeyWindow, privacy: .public)")
+        let shownAt = CFAbsoluteTimeGetCurrent()
+        let positionMilliseconds = Int((positionedAt - startedAt) * 1_000)
+        let modelMilliseconds = Int((modelReadyAt - positionedAt) * 1_000)
+        let presentMilliseconds = Int((shownAt - modelReadyAt) * 1_000)
+        let totalMilliseconds = Int((shownAt - startedAt) * 1_000)
+        logger.notice(
+            "Ring shown position=\(AppSettings.shared.ringPosition, privacy: .public) keyWindow=\(self.panel.isKeyWindow, privacy: .public) positionMs=\(positionMilliseconds, privacy: .public) modelMs=\(modelMilliseconds, privacy: .public) presentMs=\(presentMilliseconds, privacy: .public) totalMs=\(totalMilliseconds, privacy: .public)"
+        )
 
         let eventMask: NSEvent.EventTypeMask = [.keyDown, .scrollWheel]
 
@@ -2079,6 +2088,60 @@ final class RingPanelController {
             }
             return event
         }
+    }
+
+    private func positionPanel() -> Bool {
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
+        guard let screen else { return false }
+        let visibleFrame = screen.visibleFrame
+        let size = panel.frame.size
+        let origin: NSPoint
+        if AppSettings.shared.ringPosition == "screenCenter" {
+            origin = NSPoint(
+                x: screen.frame.midX - size.width / 2,
+                y: screen.frame.midY - size.height / 2
+            )
+        } else {
+            origin = NSPoint(
+                x: min(max(mouse.x - size.width / 2, visibleFrame.minX), visibleFrame.maxX - size.width),
+                y: min(max(mouse.y - size.height / 2, visibleFrame.minY), visibleFrame.maxY - size.height)
+            )
+        }
+        panel.setFrameOrigin(origin)
+        return true
+    }
+
+    private func prewarmPanel() {
+        guard positionPanel() else { return }
+        isPrewarming = true
+        model.reloadApps()
+        model.goBack()
+        model.resetSelection()
+        panel.alphaValue = 0.001
+        panel.orderFrontRegardless()
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.finishPrewarming()
+        }
+        prewarmWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 0.12,
+            execute: workItem
+        )
+        logger.notice("Ring prewarm began")
+    }
+
+    private func finishPrewarming() {
+        guard isPrewarming else { return }
+        prewarmWorkItem?.cancel()
+        prewarmWorkItem = nil
+        panel.orderOut(nil)
+        panel.alphaValue = 1
+        isPrewarming = false
+        logger.notice("Ring prewarm completed")
     }
 
     @discardableResult
@@ -2921,7 +2984,7 @@ struct RingMenuView: View {
                 ringButton(item, index: index, count: model.items.count)
             }
         }
-        .frame(width: 700, height: 700)
+        .frame(width: ringPanelSize, height: ringPanelSize)
         .scaleEffect(appeared ? 1 : 0.82)
         .opacity(appeared ? 1 : 0)
         .preferredColorScheme(preferredScheme)
@@ -3047,7 +3110,7 @@ struct RingMenuView: View {
     }
 
     private func radialIndex(at location: CGPoint) -> Int? {
-        let center = CGPoint(x: 350, y: 350)
+        let center = CGPoint(x: ringPanelSize / 2, y: ringPanelSize / 2)
         let dx = location.x - center.x
         let dy = location.y - center.y
         let radius = hypot(dx, dy)
