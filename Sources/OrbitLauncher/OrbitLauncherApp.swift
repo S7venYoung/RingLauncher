@@ -2888,9 +2888,9 @@ struct RingMenuView: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var appeared = false
 
-    private var diameter: CGFloat { 560 * settings.ringScale }
-    private var itemRadius: CGFloat { 210 * settings.ringScale }
-    private var innerDiameter: CGFloat { 174 * settings.ringScale }
+    private var diameter: CGFloat { 480 * settings.ringScale }
+    private var itemRadius: CGFloat { 180 * settings.ringScale }
+    private var innerDiameter: CGFloat { 150 * settings.ringScale }
     private var preferredScheme: ColorScheme? {
         switch settings.appearance {
         case "light": return .light
@@ -3006,21 +3006,16 @@ struct RingMenuView: View {
             item.action()
         } label: {
             VStack(spacing: 7) {
-                ZStack {
-                    Circle()
-                        .fill(model.selectedIndex == index ? Color.white.opacity(0.22) : .clear)
-                        .frame(width: settings.iconSize + 18, height: settings.iconSize + 18)
-                    if let icon = item.icon {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: settings.iconSize, height: settings.iconSize)
-                            .shadow(color: .black.opacity(0.22), radius: 5, y: 3)
-                    } else {
-                        Image(systemName: item.symbol ?? "circle")
-                            .font(.system(size: settings.iconSize * 0.58, weight: .medium))
-                            .frame(width: settings.iconSize, height: settings.iconSize)
-                    }
+                if let icon = item.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: settings.iconSize, height: settings.iconSize)
+                        .shadow(color: .black.opacity(0.22), radius: 5, y: 3)
+                } else {
+                    Image(systemName: item.symbol ?? "circle")
+                        .font(.system(size: settings.iconSize * 0.58, weight: .medium))
+                        .frame(width: settings.iconSize, height: settings.iconSize)
                 }
                 if settings.showItemNames {
                     Text(item.title)
