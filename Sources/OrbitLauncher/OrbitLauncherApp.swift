@@ -2905,33 +2905,17 @@ struct RingMenuView: View {
                 .contentShape(Rectangle())
                 .onTapGesture { model.dismiss?() }
 
-            Circle()
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.28), radius: 30, y: 14)
-                .frame(width: diameter, height: diameter)
+            ringSurface
 
             ForEach(Array(model.items.enumerated()), id: \.element.id) { index, _ in
                 segment(index: index, count: model.items.count)
             }
 
             Circle()
-                .fill(.ultraThickMaterial)
-                .overlay(Circle().stroke(.white.opacity(0.32), lineWidth: 1))
-                .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                .fill(.clear)
+                .contentShape(Circle())
                 .frame(width: innerDiameter, height: innerDiameter)
                 .onTapGesture { model.escape() }
-
-            VStack(spacing: 7) {
-                Image(systemName: model.selectedApp == nil ? "circle.grid.3x3.fill" : "bolt.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(model.centerTitle)
-                    .font(.system(size: 17, weight: .semibold))
-                    .multilineTextAlignment(.center)
-                Text(model.selectedApp == nil ? "滚轮选择 · 回车确认" : "点击中心返回")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-            }
 
             ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                 ringButton(item, index: index, count: model.items.count)
@@ -2954,6 +2938,31 @@ struct RingMenuView: View {
         .simultaneousGesture(radialSelectionGesture)
     }
 
+    @ViewBuilder
+    private var ringSurface: some View {
+        let shape = RingDonutShape(innerRatio: innerDiameter / diameter)
+
+        if #available(macOS 26.0, *) {
+            Color.clear
+                .frame(width: diameter, height: diameter)
+                .glassEffect(in: shape)
+                .overlay {
+                    shape
+                        .stroke(.white.opacity(0.30), lineWidth: 0.8)
+                }
+                .shadow(color: .black.opacity(0.24), radius: 28, y: 14)
+        } else {
+            shape
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    shape
+                        .stroke(.white.opacity(0.28), lineWidth: 0.8)
+                }
+                .shadow(color: .black.opacity(0.24), radius: 28, y: 14)
+                .frame(width: diameter, height: diameter)
+        }
+    }
+
     private func reveal() {
         appeared = false
         DispatchQueue.main.async {
@@ -2973,8 +2982,8 @@ struct RingMenuView: View {
         )
         .fill(
             selected
-                ? Color.accentColor.opacity(0.30)
-                : Color.primary.opacity(index.isMultiple(of: 2) ? 0.035 : 0.018)
+                ? Color.accentColor.opacity(0.22)
+                : Color.white.opacity(index.isMultiple(of: 2) ? 0.030 : 0.012)
         )
         .overlay {
             RingSegment(
@@ -2982,7 +2991,7 @@ struct RingMenuView: View {
                 endAngle: .degrees(center + slice / 2),
                 innerRatio: innerDiameter / diameter
             )
-            .stroke(.white.opacity(selected ? 0.55 : 0.16), lineWidth: selected ? 1.5 : 0.7)
+            .stroke(.white.opacity(selected ? 0.62 : 0.18), lineWidth: selected ? 1.35 : 0.65)
         }
         .frame(width: diameter, height: diameter)
     }
@@ -3054,6 +3063,33 @@ struct RingMenuView: View {
         if angle < 0 { angle += 2 * Double.pi }
         let slice = 2 * Double.pi / Double(model.items.count)
         return min(Int(angle / slice), model.items.count - 1)
+    }
+}
+
+struct RingDonutShape: Shape {
+    let innerRatio: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outerRadius = min(rect.width, rect.height) / 2
+        let innerRadius = outerRadius * innerRatio
+        var path = Path()
+        path.addArc(
+            center: center,
+            radius: outerRadius,
+            startAngle: .degrees(-90),
+            endAngle: .degrees(270),
+            clockwise: false
+        )
+        path.addArc(
+            center: center,
+            radius: innerRadius,
+            startAngle: .degrees(270),
+            endAngle: .degrees(-90),
+            clockwise: true
+        )
+        path.closeSubpath()
+        return path
     }
 }
 
