@@ -1279,6 +1279,7 @@ struct HotKeyModifier: Identifiable {
         .init(value: optionKey | cmdKey, label: "⌥⌘"),
         .init(value: controlKey | optionKey, label: "⌃⌥"),
         .init(value: controlKey | cmdKey, label: "⌃⌘"),
+        .init(value: controlKey | shiftKey, label: "⌃⇧"),
         .init(value: shiftKey | optionKey, label: "⇧⌥"),
         .init(value: shiftKey | cmdKey, label: "⇧⌘")
     ]
