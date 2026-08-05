@@ -320,11 +320,18 @@ final class SurfaceDialManager: ObservableObject {
 
         tickAccumulator -= logicalSteps * ticksPerStep
         let direction = logicalSteps > 0 ? 1 : -1
+        let callbackStartedAt = CFAbsoluteTimeGetCurrent()
+        logger.notice(
+            "Surface Dial dispatch began delta=\(rawDelta, privacy: .public) logicalSteps=\(logicalSteps, privacy: .public)"
+        )
         for _ in 0..<abs(logicalSteps) {
             onRotation?(direction)
         }
+        let callbackMilliseconds = Int(
+            (CFAbsoluteTimeGetCurrent() - callbackStartedAt) * 1_000
+        )
         logger.notice(
-            "Surface Dial delta=\(rawDelta, privacy: .public) logicalSteps=\(logicalSteps, privacy: .public) remainder=\(self.tickAccumulator, privacy: .public)"
+            "Surface Dial delta=\(rawDelta, privacy: .public) logicalSteps=\(logicalSteps, privacy: .public) remainder=\(self.tickAccumulator, privacy: .public) callbackMs=\(callbackMilliseconds, privacy: .public)"
         )
     }
 
