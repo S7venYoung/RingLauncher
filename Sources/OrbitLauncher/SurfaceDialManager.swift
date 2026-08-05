@@ -9,6 +9,10 @@ final class SurfaceDialManager: ObservableObject {
 
     static let vendorID = 0x045E
     static let productID = 0x091B
+    // SimpleHapticsController waveform ordinals (HID Page 0x0E) from the
+    // device's WaveformList: 3 = Click, 4 = Buzz Continuous.
+    static let waveformClick = 3
+    static let waveformBuzz = 4
 
     @Published private(set) var isConnected = false
     @Published private(set) var resolution = 360
@@ -92,6 +96,38 @@ final class SurfaceDialManager: ObservableObject {
         hapticsEnabled = enabled
         guard let device else { return }
         configureHaptics(on: device)
+    }
+
+    /// Sends a one-shot haptic waveform (output report) so the user can feel a
+    /// single click/buzz without affecting the rotation detent configuration.
+    func performHaptic(waveform: Int) {
+        guard running, isConnected, let device, hapticsEnabled else { return }
+        // SimpleHapticsController output report (HID Page 0x0E, Usage 0x01).
+        //   [0] RetriggerPeriod: 0 = one-shot / no retrigger
+        //   [1] AutoTriggerAssociatedControl: 1 = manual trigger
+        //   [2..3] Waveform ordinal into WaveformList (uint16 LE)
+        var report: [UInt8] = [
+            0x00,
+            0x01,
+            UInt8(waveform & 0xFF),
+            UInt8((waveform >> 8) & 0xFF)
+        ]
+        let result = IOHIDDeviceSetReport(
+            device,
+            kIOHIDReportTypeOutput,
+            CFIndex(1),
+            &report,
+            CFIndex(report.count)
+        )
+        if result == kIOReturnSuccess {
+            logger.notice(
+                "Surface Dial one-shot haptic waveform=\(waveform, privacy: .public)"
+            )
+        } else {
+            logger.error(
+                "Surface Dial one-shot haptic failed result=\(result, privacy: .public)"
+            )
+        }
     }
 
     func refreshRotationPrecision() {
