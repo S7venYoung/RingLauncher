@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let surfaceDial = SurfaceDialManager.shared
     private var activeDialSecondLayerProfileID: UUID?
     private var dialSecondLayerExpiresAt: TimeInterval = 0
+    private var dialSecondLayerExpiryWorkItem: DispatchWorkItem?
     private var pendingDialSinglePress: DispatchWorkItem?
     private var pendingDialLongPress: DispatchWorkItem?
     private var dialButtonIsDown = false
@@ -107,6 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureSurfaceDial() {
         let settings = AppSettings.shared
+        surfaceDial.rotationDegreesProvider = { [weak self] in
+            self?.currentDirectDialRotationDegrees()
+        }
         surfaceDial.onRotation = { [weak self] direction in
             guard let self else { return }
             if self.shouldUseDirectDialControl() {
@@ -146,6 +150,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func currentDirectDialRotationDegrees() -> Int? {
+        guard controller?.isVisible != true else { return nil }
+        let settings = AppSettings.shared
+        let usesDirectControl: Bool
+        switch settings.surfaceDialControlMode {
+        case "direct":
+            usesDirectControl = true
+        case "smart":
+            usesDirectControl = frontmostWindowIsFullScreen()
+        default:
+            usesDirectControl = false
+        }
+        guard usesDirectControl else { return nil }
+
+        let bundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let profile = settings.dialProfile(for: bundleIdentifier)
+        let now = Date.timeIntervalSinceReferenceDate
+        let layer = activeDialSecondLayerProfileID == profile.id
+            && now < dialSecondLayerExpiresAt ? 2 : 1
+        return profile.resolvedRotationDegrees(for: layer)
+    }
+
     private func shouldUseDirectDialControl() -> Bool {
         if controller?.isVisible == true { return false }
 
@@ -168,9 +194,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showRingFromSmartMode() {
+        dialSecondLayerExpiryWorkItem?.cancel()
+        dialSecondLayerExpiryWorkItem = nil
         activeDialSecondLayerProfileID = nil
         dialSecondLayerExpiresAt = 0
         controller?.showForSurfaceDial()
+        surfaceDial.refreshRotationPrecision()
         dialLogger.notice("Smart Dial gesture opened ring")
     }
 
@@ -253,8 +282,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activeDialSecondLayerProfileID == profile.id
             && now < dialSecondLayerExpiresAt
         if !secondLayerIsActive {
-            activeDialSecondLayerProfileID = nil
-            dialSecondLayerExpiresAt = 0
+            if activeDialSecondLayerProfileID != nil {
+                clearDialSecondLayer()
+            }
         }
 
         let layer = secondLayerIsActive ? 2 : 1
@@ -262,14 +292,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if shortcut.resolvedKind == "enterSecondLayer" {
             activeDialSecondLayerProfileID = profile.id
             dialSecondLayerExpiresAt = now + dialSecondLayerTimeout
+            scheduleDialSecondLayerExpiry(for: profile.id)
+            surfaceDial.refreshRotationPrecision()
             dialLogger.notice(
                 "Direct Dial entered second layer profile=\(profile.name, privacy: .public)"
             )
             return
         }
         if shortcut.resolvedKind == "exitSecondLayer" {
-            activeDialSecondLayerProfileID = nil
-            dialSecondLayerExpiresAt = 0
+            clearDialSecondLayer()
             dialLogger.notice(
                 "Direct Dial exited second layer profile=\(profile.name, privacy: .public)"
             )
@@ -278,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if secondLayerIsActive {
             dialSecondLayerExpiresAt = now + dialSecondLayerTimeout
+            scheduleDialSecondLayerExpiry(for: profile.id)
         }
         switch shortcut.resolvedKind {
         case "none":
@@ -347,6 +379,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Direct Dial action=\(action.rawValue, privacy: .public) layer=\(layer, privacy: .public) kind=\(shortcut.resolvedKind, privacy: .public) app=\(bundleIdentifier ?? "unknown", privacy: .public) profile=\(profile.name, privacy: .public)"
         )
     }
+
+    private func scheduleDialSecondLayerExpiry(for profileID: UUID) {
+        dialSecondLayerExpiryWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.activeDialSecondLayerProfileID == profileID,
+                  Date.timeIntervalSinceReferenceDate >= self.dialSecondLayerExpiresAt else {
+                return
+            }
+            self.clearDialSecondLayer()
+            self.dialLogger.notice("Direct Dial second layer expired; restored first-layer precision")
+        }
+        dialSecondLayerExpiryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + dialSecondLayerTimeout + 0.05,
+            execute: workItem
+        )
+    }
+
+    private func clearDialSecondLayer() {
+        dialSecondLayerExpiryWorkItem?.cancel()
+        dialSecondLayerExpiryWorkItem = nil
+        activeDialSecondLayerProfileID = nil
+        dialSecondLayerExpiresAt = 0
+        surfaceDial.refreshRotationPrecision()
+    }
 }
 
 private func requestAccessibilityPermissionIfNeeded() {
@@ -402,6 +460,7 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
     var name: String
     var bundleIdentifier: String
     var rotationDegrees: Int? = nil
+    var secondLayerRotationDegrees: Int? = nil
     var counterClockwise: DialShortcut
     var clockwise: DialShortcut
     var press: DialShortcut
@@ -421,6 +480,14 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
 
     var resolvedRotationDegrees: Int {
         max(1, min(rotationDegrees ?? 18, 36))
+    }
+
+    var resolvedSecondLayerRotationDegrees: Int {
+        max(1, min(secondLayerRotationDegrees ?? resolvedRotationDegrees, 36))
+    }
+
+    func resolvedRotationDegrees(for layer: Int) -> Int {
+        layer == 2 ? resolvedSecondLayerRotationDegrees : resolvedRotationDegrees
     }
 
     func shortcut(
@@ -1114,11 +1181,15 @@ final class AppSettings: ObservableObject {
         saveDialProfiles()
     }
 
-    func updateSelectedDialRotationDegrees(_ degrees: Int) {
+    func updateSelectedDialRotationDegrees(_ degrees: Int, layer: Int = 1) {
         guard let index = dialProfiles.firstIndex(where: {
             $0.id.uuidString == selectedDialProfileID
         }) else { return }
-        dialProfiles[index].rotationDegrees = max(1, min(degrees, 36))
+        if layer == 2 {
+            dialProfiles[index].secondLayerRotationDegrees = max(1, min(degrees, 36))
+        } else {
+            dialProfiles[index].rotationDegrees = max(1, min(degrees, 36))
+        }
         saveDialProfiles()
         NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
     }
@@ -1603,7 +1674,7 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Stepper(
-                                "旋转精度：\(profile.resolvedRotationDegrees)°/格（约 \(max(1, Int((360.0 / Double(profile.resolvedRotationDegrees)).rounded()))) 格/圈）",
+                                "第一层旋转精度：\(profile.resolvedRotationDegrees)°/格（约 \(max(1, Int((360.0 / Double(profile.resolvedRotationDegrees)).rounded()))) 格/圈）",
                                 value: Binding(
                                     get: {
                                         settings.selectedDialProfile?.resolvedRotationDegrees ?? 18
@@ -1644,6 +1715,20 @@ struct SettingsView: View {
                             Divider()
                             Text("第二层")
                                 .font(.headline)
+                            if let profile = settings.selectedDialProfile {
+                                Stepper(
+                                    "第二层旋转精度：\(profile.resolvedSecondLayerRotationDegrees)°/格（约 \(max(1, Int((360.0 / Double(profile.resolvedSecondLayerRotationDegrees)).rounded()))) 格/圈）",
+                                    value: Binding(
+                                        get: {
+                                            settings.selectedDialProfile?.resolvedSecondLayerRotationDegrees ?? 18
+                                        },
+                                        set: {
+                                            settings.updateSelectedDialRotationDegrees($0, layer: 2)
+                                        }
+                                    ),
+                                    in: 1...36
+                                )
+                            }
                             DialShortcutRow(
                                 title: "逆时针",
                                 action: .counterClockwise,
