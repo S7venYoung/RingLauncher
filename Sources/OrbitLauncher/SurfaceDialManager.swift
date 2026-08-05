@@ -15,6 +15,7 @@ final class SurfaceDialManager: ObservableObject {
 
     var onRotation: ((Int) -> Void)?
     var onButtonChanged: ((Bool) -> Void)?
+    var rotationDegreesProvider: (() -> Int?)?
 
     private let logger = Logger(
         subsystem: "com.s7venyoung.orbitlauncher",
@@ -91,6 +92,13 @@ final class SurfaceDialManager: ObservableObject {
         hapticsEnabled = enabled
         guard let device else { return }
         configureHaptics(on: device)
+    }
+
+    func refreshRotationPrecision() {
+        tickAccumulator = 0
+        if let device {
+            configureHaptics(on: device)
+        }
     }
 
     func configureSleepPrevention(enabled: Bool, interval: Int) {
@@ -257,7 +265,6 @@ final class SurfaceDialManager: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self,
-                      AppSettings.shared.surfaceDialControlMode == "direct",
                       let device = self.device else {
                     return
                 }
@@ -277,11 +284,7 @@ final class SurfaceDialManager: ObservableObject {
     }
 
     private func desiredStepsPerRotation() -> Int {
-        if AppSettings.shared.surfaceDialControlMode == "direct" {
-            let bundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-            let degrees = AppSettings.shared
-                .dialProfile(for: bundleIdentifier)
-                .resolvedRotationDegrees
+        if let degrees = rotationDegreesProvider?() {
             return max(1, min(Int((360.0 / Double(degrees)).rounded()), Int(UInt16.max)))
         }
         return max(
