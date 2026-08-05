@@ -2044,13 +2044,14 @@ final class RingPanelController {
 
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
-        guard let visibleFrame = screen?.visibleFrame else { return }
+        guard let screen else { return }
+        let visibleFrame = screen.visibleFrame
         let size = panel.frame.size
         let origin: NSPoint
         if AppSettings.shared.ringPosition == "screenCenter" {
             origin = NSPoint(
-                x: visibleFrame.midX - size.width / 2,
-                y: visibleFrame.midY - size.height / 2
+                x: screen.frame.midX - size.width / 2,
+                y: screen.frame.midY - size.height / 2
             )
         } else {
             origin = NSPoint(
