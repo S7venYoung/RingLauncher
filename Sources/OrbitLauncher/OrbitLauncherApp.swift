@@ -294,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dialSecondLayerExpiresAt = now + dialSecondLayerTimeout
             scheduleDialSecondLayerExpiry(for: profile.id)
             surfaceDial.refreshRotationPrecision()
-            playLayerSwitchHaptic(entering: true)
+            playLayerSwitchHaptic(for: 2)
             dialLogger.notice(
                 "Direct Dial entered second layer profile=\(profile.name, privacy: .public)"
             )
@@ -302,7 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if shortcut.resolvedKind == "exitSecondLayer" {
             clearDialSecondLayer()
-            playLayerSwitchHaptic(entering: false)
+            playLayerSwitchHaptic(for: 1)
             dialLogger.notice(
                 "Direct Dial exited second layer profile=\(profile.name, privacy: .public)"
             )
@@ -408,19 +408,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         surfaceDial.refreshRotationPrecision()
     }
 
-    /// One-shot haptic feedback so the user can feel which layer is active:
-    /// buzz when entering the second layer, click when leaving it. Timeout
-    /// expiry intentionally stays silent.
-    private func playLayerSwitchHaptic(entering: Bool) {
+    /// One-shot click when switching INTO a layer, using that layer's own
+    /// feedback setting (silent or click). Independent of the rotation
+    /// detent master switch; timeout expiry intentionally stays silent.
+    private func playLayerSwitchHaptic(for layer: Int) {
         let settings = AppSettings.shared
         guard settings.surfaceDialLayerHapticsEnabled else { return }
-        let waveformName = entering
-            ? settings.surfaceDialLayerEnterWaveform
-            : settings.surfaceDialLayerExitWaveform
-        let waveform = waveformName == "buzz"
-            ? SurfaceDialManager.waveformBuzz
-            : SurfaceDialManager.waveformClick
-        surfaceDial.performHaptic(waveform: waveform)
+        let feedback = layer == 2
+            ? settings.surfaceDialLayer2Feedback
+            : settings.surfaceDialLayer1Feedback
+        guard feedback == "click" else { return }
+        surfaceDial.performHaptic(waveform: SurfaceDialManager.waveformClick)
     }
 }
 
@@ -940,19 +938,19 @@ final class AppSettings: ObservableObject {
             )
         }
     }
-    @Published var surfaceDialLayerEnterWaveform: String {
+    @Published var surfaceDialLayer1Feedback: String {
         didSet {
             UserDefaults.standard.set(
-                surfaceDialLayerEnterWaveform,
-                forKey: Keys.surfaceDialLayerEnterWaveform
+                surfaceDialLayer1Feedback,
+                forKey: Keys.surfaceDialLayer1Feedback
             )
         }
     }
-    @Published var surfaceDialLayerExitWaveform: String {
+    @Published var surfaceDialLayer2Feedback: String {
         didSet {
             UserDefaults.standard.set(
-                surfaceDialLayerExitWaveform,
-                forKey: Keys.surfaceDialLayerExitWaveform
+                surfaceDialLayer2Feedback,
+                forKey: Keys.surfaceDialLayer2Feedback
             )
         }
     }
@@ -1027,8 +1025,8 @@ final class AppSettings: ObservableObject {
         static let surfaceDialStepsPerRotation = "surfaceDialStepsPerRotation"
         static let surfaceDialHapticsEnabled = "surfaceDialHapticsEnabled"
         static let surfaceDialLayerHapticsEnabled = "surfaceDialLayerHapticsEnabled"
-        static let surfaceDialLayerEnterWaveform = "surfaceDialLayerEnterWaveform"
-        static let surfaceDialLayerExitWaveform = "surfaceDialLayerExitWaveform"
+        static let surfaceDialLayer1Feedback = "surfaceDialLayer1Feedback"
+        static let surfaceDialLayer2Feedback = "surfaceDialLayer2Feedback"
         static let surfaceDialPreventSleepEnabled = "surfaceDialPreventSleepEnabled"
         static let surfaceDialKeepAliveSeconds = "surfaceDialKeepAliveSeconds"
         static let surfaceDialControlMode = "surfaceDialControlMode"
@@ -1067,10 +1065,10 @@ final class AppSettings: ObservableObject {
             defaults.object(forKey: Keys.surfaceDialHapticsEnabled) as? Bool ?? true
         surfaceDialLayerHapticsEnabled =
             defaults.object(forKey: Keys.surfaceDialLayerHapticsEnabled) as? Bool ?? true
-        surfaceDialLayerEnterWaveform =
-            defaults.string(forKey: Keys.surfaceDialLayerEnterWaveform) ?? "buzz"
-        surfaceDialLayerExitWaveform =
-            defaults.string(forKey: Keys.surfaceDialLayerExitWaveform) ?? "click"
+        surfaceDialLayer1Feedback =
+            defaults.string(forKey: Keys.surfaceDialLayer1Feedback) ?? "silent"
+        surfaceDialLayer2Feedback =
+            defaults.string(forKey: Keys.surfaceDialLayer2Feedback) ?? "click"
         surfaceDialPreventSleepEnabled =
             defaults.object(forKey: Keys.surfaceDialPreventSleepEnabled) as? Bool ?? true
         surfaceDialKeepAliveSeconds =
@@ -1628,32 +1626,28 @@ struct SettingsView: View {
                     Toggle("启用触觉反馈", isOn: $settings.surfaceDialHapticsEnabled)
                         .disabled(!settings.surfaceDialEnabled)
                     Toggle(
-                        "第二层切换时震动",
+                        "切层时震动反馈",
                         isOn: $settings.surfaceDialLayerHapticsEnabled
                     )
-                    .disabled(
-                        !settings.surfaceDialEnabled
-                            || !settings.surfaceDialHapticsEnabled
-                    )
+                    .disabled(!settings.surfaceDialEnabled)
                     HStack {
                         Picker(
-                            "进入第二层",
-                            selection: $settings.surfaceDialLayerEnterWaveform
+                            "第一层",
+                            selection: $settings.surfaceDialLayer1Feedback
                         ) {
-                            Text("蜂鸣").tag("buzz")
+                            Text("静音").tag("silent")
                             Text("咔哒").tag("click")
                         }
                         Picker(
-                            "退出第二层",
-                            selection: $settings.surfaceDialLayerExitWaveform
+                            "第二层",
+                            selection: $settings.surfaceDialLayer2Feedback
                         ) {
+                            Text("静音").tag("silent")
                             Text("咔哒").tag("click")
-                            Text("蜂鸣").tag("buzz")
                         }
                     }
                     .disabled(
                         !settings.surfaceDialEnabled
-                            || !settings.surfaceDialHapticsEnabled
                             || !settings.surfaceDialLayerHapticsEnabled
                     )
                     Toggle(
@@ -1706,7 +1700,7 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text("触觉反馈开启后，Dial 会按每圈步数产生物理刻度震动；第二层切换震动会以“进入蜂鸣、退出咔哒”的差异提示当前所在层级，超时自动返回第一层时静默。")
+                    Text("“启用触觉反馈”是旋转刻度震动的总开关；切层震动独立于总开关，进入第一/第二层时按各层设置播放“咔哒”或静音，超时自动返回第一层时静默。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text("主动保活会定期读写静默 HID 报告，并避免应用被 App Nap 暂停；不会阻止 Mac 正常睡眠，但会缩短 Dial 电池续航。建议先使用 15 秒。")

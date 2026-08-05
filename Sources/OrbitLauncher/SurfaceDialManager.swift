@@ -9,10 +9,9 @@ final class SurfaceDialManager: ObservableObject {
 
     static let vendorID = 0x045E
     static let productID = 0x091B
-    // SimpleHapticsController waveform ordinals (HID Page 0x0E) from the
-    // device's WaveformList: 3 = Click, 4 = Buzz Continuous.
+    // SimpleHapticsController waveform ordinal (HID Page 0x0E) from the
+    // device's WaveformList: 3 = Click.
     static let waveformClick = 3
-    static let waveformBuzz = 4
 
     @Published private(set) var isConnected = false
     @Published private(set) var resolution = 360
@@ -99,9 +98,9 @@ final class SurfaceDialManager: ObservableObject {
     }
 
     /// Sends a one-shot haptic waveform (output report) so the user can feel a
-    /// single click/buzz without affecting the rotation detent configuration.
+    /// single click without affecting the rotation detent configuration.
     func performHaptic(waveform: Int) {
-        guard running, isConnected, let device, hapticsEnabled else { return }
+        guard running, isConnected, let device else { return }
         // SimpleHapticsController output report (HID Page 0x0E, Usage 0x01).
         //   [0] RetriggerPeriod: 0 = one-shot / no retrigger
         //   [1] AutoTriggerAssociatedControl: 1 = manual trigger
