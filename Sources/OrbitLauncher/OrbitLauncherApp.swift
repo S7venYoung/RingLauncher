@@ -111,6 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         surfaceDial.rotationDegreesProvider = { [weak self] in
             self?.currentDirectDialRotationDegrees()
         }
+        surfaceDial.detentsEnabledProvider = { [weak self] in
+            self?.currentDirectDialDetentsEnabled() ?? true
+        }
         surfaceDial.onRotation = { [weak self] direction in
             guard let self else { return }
             if self.shouldUseDirectDialControl() {
@@ -170,6 +173,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let layer = activeDialSecondLayerProfileID == profile.id
             && now < dialSecondLayerExpiresAt ? 2 : 1
         return profile.resolvedRotationDegrees(for: layer)
+    }
+
+    /// Whether rotation detents should be enabled right now. In direct
+    /// control this follows the active layer's feedback setting: a layer set
+    /// to 静音 rotates smoothly even when the master haptics switch is on.
+    /// Ring mode keeps the master behavior (detents on when master is on).
+    private func currentDirectDialDetentsEnabled() -> Bool {
+        guard controller?.isVisible != true else { return true }
+        let settings = AppSettings.shared
+        let usesDirectControl: Bool
+        switch settings.surfaceDialControlMode {
+        case "direct":
+            usesDirectControl = true
+        case "smart":
+            usesDirectControl = frontmostWindowIsFullScreen()
+        default:
+            usesDirectControl = false
+        }
+        guard usesDirectControl else { return true }
+
+        let bundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let profile = settings.dialProfile(for: bundleIdentifier)
+        let now = Date.timeIntervalSinceReferenceDate
+        let layer = activeDialSecondLayerProfileID == profile.id
+            && now < dialSecondLayerExpiresAt ? 2 : 1
+        let feedback = layer == 2
+            ? settings.surfaceDialLayer2Feedback
+            : settings.surfaceDialLayer1Feedback
+        return feedback == "click"
     }
 
     private func shouldUseDirectDialControl() -> Bool {
@@ -944,6 +976,7 @@ final class AppSettings: ObservableObject {
                 surfaceDialLayer1Feedback,
                 forKey: Keys.surfaceDialLayer1Feedback
             )
+            NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
         }
     }
     @Published var surfaceDialLayer2Feedback: String {
@@ -952,6 +985,7 @@ final class AppSettings: ObservableObject {
                 surfaceDialLayer2Feedback,
                 forKey: Keys.surfaceDialLayer2Feedback
             )
+            NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
         }
     }
     @Published var surfaceDialPreventSleepEnabled: Bool {
@@ -1630,21 +1664,23 @@ struct SettingsView: View {
                         isOn: $settings.surfaceDialLayerHapticsEnabled
                     )
                     .disabled(!settings.surfaceDialEnabled)
-                    HStack {
-                        Picker(
-                            "第一层",
-                            selection: $settings.surfaceDialLayer1Feedback
-                        ) {
-                            Text("静音").tag("silent")
-                            Text("咔哒").tag("click")
-                        }
-                        Picker(
-                            "第二层",
-                            selection: $settings.surfaceDialLayer2Feedback
-                        ) {
-                            Text("静音").tag("silent")
-                            Text("咔哒").tag("click")
-                        }
+                    Picker(
+                        "第一层（默认）",
+                        selection: $settings.surfaceDialLayer1Feedback
+                    ) {
+                        Text("静音").tag("silent")
+                        Text("咔哒").tag("click")
+                    }
+                    .disabled(
+                        !settings.surfaceDialEnabled
+                            || !settings.surfaceDialLayerHapticsEnabled
+                    )
+                    Picker(
+                        "第二层（切层后）",
+                        selection: $settings.surfaceDialLayer2Feedback
+                    ) {
+                        Text("静音").tag("silent")
+                        Text("咔哒").tag("click")
                     }
                     .disabled(
                         !settings.surfaceDialEnabled
@@ -1700,7 +1736,7 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text("“启用触觉反馈”是旋转刻度震动的总开关；切层震动独立于总开关，进入第一/第二层时按各层设置播放“咔哒”或静音，超时自动返回第一层时静默。")
+                    Text("每层可设“静音/咔哒”：咔哒 = 该层旋转有刻度震动、切层时有提示；静音 = 该层旋转平滑、切层无提示。“启用触觉反馈”是旋转刻度的总开关，“切层时震动反馈”独立于总开关。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text("主动保活会定期读写静默 HID 报告，并避免应用被 App Nap 暂停；不会阻止 Mac 正常睡眠，但会缩短 Dial 电池续航。建议先使用 15 秒。")

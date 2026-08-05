@@ -19,6 +19,7 @@ final class SurfaceDialManager: ObservableObject {
     var onRotation: ((Int) -> Void)?
     var onButtonChanged: ((Bool) -> Void)?
     var rotationDegreesProvider: (() -> Int?)?
+    var detentsEnabledProvider: (() -> Bool)?
 
     private let logger = Logger(
         subsystem: "com.s7venyoung.orbitlauncher",
@@ -232,6 +233,9 @@ final class SurfaceDialManager: ObservableObject {
         logSuccess: Bool = true
     ) -> IOReturn {
         let steps = desiredStepsPerRotation()
+        // The master switch gates all detents; a per-layer provider can
+        // further silence a specific layer (e.g. layer 1 set to 静音).
+        let detentsOn = hapticsEnabled && (detentsEnabledProvider?() ?? true)
         // IOHIDDeviceSetReport requires the report ID both as its
         // reportID argument and as the first byte when the device uses
         // multiple reports. Surface Dial's haptic feature report is ID 1.
@@ -240,7 +244,7 @@ final class SurfaceDialManager: ObservableObject {
             UInt8(steps & 0xFF),
             UInt8((steps >> 8) & 0xFF),
             0x00,
-            hapticsEnabled ? 0x03 : 0x02,
+            detentsOn ? 0x03 : 0x02,
             0x00,
             0x00,
             0x00
@@ -255,7 +259,7 @@ final class SurfaceDialManager: ObservableObject {
         if result == kIOReturnSuccess {
             if logSuccess {
                 logger.notice(
-                    "Surface Dial haptics configured enabled=\(self.hapticsEnabled, privacy: .public) steps/rev=\(steps, privacy: .public)"
+                    "Surface Dial haptics configured enabled=\(detentsOn, privacy: .public) steps/rev=\(steps, privacy: .public)"
                 )
             }
         } else {
