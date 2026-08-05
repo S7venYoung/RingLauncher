@@ -787,6 +787,9 @@ final class AppSettings: ObservableObject {
     @Published var ringScale: Double {
         didSet { UserDefaults.standard.set(ringScale, forKey: Keys.ringScale) }
     }
+    @Published var ringPosition: String {
+        didSet { UserDefaults.standard.set(ringPosition, forKey: Keys.ringPosition) }
+    }
     @Published var iconSize: Double {
         didSet { UserDefaults.standard.set(iconSize, forKey: Keys.iconSize) }
     }
@@ -903,6 +906,7 @@ final class AppSettings: ObservableObject {
         static let wheelStepSize = "wheelStepSize"
         static let wheelDebounce = "wheelDebounceMilliseconds"
         static let ringScale = "ringScale"
+        static let ringPosition = "ringPosition"
         static let iconSize = "iconSize"
         static let animations = "animationsEnabled"
         static let sound = "soundEnabled"
@@ -934,6 +938,7 @@ final class AppSettings: ObservableObject {
         wheelStepSize = defaults.object(forKey: Keys.wheelStepSize) as? Int ?? 1
         wheelDebounceMilliseconds = defaults.object(forKey: Keys.wheelDebounce) as? Int ?? 60
         ringScale = defaults.object(forKey: Keys.ringScale) as? Double ?? 1
+        ringPosition = defaults.string(forKey: Keys.ringPosition) ?? "mouse"
         iconSize = defaults.object(forKey: Keys.iconSize) as? Double ?? 56
         animationsEnabled = defaults.object(forKey: Keys.animations) as? Bool ?? true
         soundEnabled = defaults.object(forKey: Keys.sound) as? Bool ?? true
@@ -1383,6 +1388,21 @@ struct SettingsView: View {
             .tabItem { Label("通用", systemImage: "gearshape") }
 
             Form {
+                Section("呼出位置") {
+                    Picker("圆环位置", selection: $settings.ringPosition) {
+                        Text("鼠标位置").tag("mouse")
+                        Text("屏幕中央").tag("screenCenter")
+                    }
+                    .pickerStyle(.segmented)
+                    Text(
+                        settings.ringPosition == "screenCenter"
+                            ? "圆环固定显示在鼠标当前所在屏幕的中央。"
+                            : "圆环以鼠标位置为中心，并自动避开屏幕边缘。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
                 Section("圆环尺寸") {
                     HStack {
                         Text("面板")
@@ -2026,10 +2046,18 @@ final class RingPanelController {
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
         guard let visibleFrame = screen?.visibleFrame else { return }
         let size = panel.frame.size
-        let origin = NSPoint(
-            x: min(max(mouse.x - size.width / 2, visibleFrame.minX), visibleFrame.maxX - size.width),
-            y: min(max(mouse.y - size.height / 2, visibleFrame.minY), visibleFrame.maxY - size.height)
-        )
+        let origin: NSPoint
+        if AppSettings.shared.ringPosition == "screenCenter" {
+            origin = NSPoint(
+                x: visibleFrame.midX - size.width / 2,
+                y: visibleFrame.midY - size.height / 2
+            )
+        } else {
+            origin = NSPoint(
+                x: min(max(mouse.x - size.width / 2, visibleFrame.minX), visibleFrame.maxX - size.width),
+                y: min(max(mouse.y - size.height / 2, visibleFrame.minY), visibleFrame.maxY - size.height)
+            )
+        }
         panel.setFrameOrigin(origin)
         panel.makeKeyAndOrderFront(nil)
         resetInactivityTimer()
