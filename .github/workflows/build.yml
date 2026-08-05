@@ -2,7 +2,7 @@ name: Build macOS App
 
 on:
   push:
-    branches: [main, agent/surface-dial, agent/dial-direct-control]
+    branches: [main, agent/surface-dial, agent/dial-direct-control, agent/macos26-liquid-glass]
   pull_request:
   workflow_dispatch:
 
@@ -11,14 +11,19 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ${{ github.ref == 'refs/heads/agent/macos26-liquid-glass' && 'macos-26' || 'macos-15' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/agent/macos26-liquid-glass" ]; then
+            xcodebuild -version
+          else
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
 
       - name: Build release binary
         run: swift build -c release --arch arm64
