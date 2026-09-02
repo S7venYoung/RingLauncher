@@ -54,10 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dialLongPressDidFire = false
     private var dialButtonUsesDirectControl = false
     private var lastSmartModeUsesDirectControl: Bool?
-    private var lastHiddenDialScrollAt: TimeInterval = 0
-    private var hiddenDialScrollDirection = 0
-    private var hiddenDialFastRotationStreak = 0
-    private var hiddenDialFastModeUntil: TimeInterval = 0
+    private var lastAcceleratedDialScrollAt: TimeInterval = 0
+    private var acceleratedDialScrollDirection = 0
+    private var dialFastRotationStreak = 0
+    private var dialFastScrollModeUntil: TimeInterval = 0
     private let dialDoublePressInterval: TimeInterval = 0.32
     private let dialLongPressInterval: TimeInterval = 0.65
     private let dialSecondLayerTimeout: TimeInterval = 5
@@ -128,9 +128,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.controller?.isVisible != true
                     && AppSettings.shared.surfaceDialRingActivation == "press" {
                     let settings = AppSettings.shared
-                    let multiplier = self.hiddenDialScrollMultiplier(
+                    let profile = settings.dialProfile(
+                        for: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    )
+                    let multiplier = self.dialScrollMultiplier(
                         direction: direction,
-                        settings: settings
+                        enabled: profile.fastScrollEnabled
+                            ?? settings.surfaceDialFastScrollEnabled,
+                        fastMultiplier: profile.fastScrollMultiplier
+                            ?? settings.surfaceDialFastScrollMultiplier
                     )
                     let lines = settings.surfaceDialHiddenScrollLines * multiplier
                     let scrollLines = direction > 0 ? -lines : lines
@@ -177,40 +183,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// MagSpeed-style software acceleration for the press-to-open mode.
+    /// MagSpeed-style software acceleration for scrolling driven by the Dial.
     /// Two consecutive fast detents enter fast scrolling; slowing down,
     /// stopping, or reversing direction immediately restores precise scrolling.
-    private func hiddenDialScrollMultiplier(
+    private func dialScrollMultiplier(
         direction: Int,
-        settings: AppSettings
+        enabled: Bool,
+        fastMultiplier: Int
     ) -> Int {
-        guard settings.surfaceDialFastScrollEnabled else {
-            lastHiddenDialScrollAt = Date.timeIntervalSinceReferenceDate
-            hiddenDialScrollDirection = direction
-            hiddenDialFastRotationStreak = 0
-            hiddenDialFastModeUntil = 0
+        guard enabled else {
+            lastAcceleratedDialScrollAt = Date.timeIntervalSinceReferenceDate
+            acceleratedDialScrollDirection = direction
+            dialFastRotationStreak = 0
+            dialFastScrollModeUntil = 0
             return 1
         }
 
         let now = Date.timeIntervalSinceReferenceDate
-        let interval = now - lastHiddenDialScrollAt
-        let sameDirection = direction == hiddenDialScrollDirection
+        let interval = now - lastAcceleratedDialScrollAt
+        let sameDirection = direction == acceleratedDialScrollDirection
         let isFastDetent = sameDirection && interval > 0 && interval <= 0.12
 
         if isFastDetent {
-            hiddenDialFastRotationStreak += 1
-            if hiddenDialFastRotationStreak >= 2 {
-                hiddenDialFastModeUntil = now + 0.32
+            dialFastRotationStreak += 1
+            if dialFastRotationStreak >= 2 {
+                dialFastScrollModeUntil = now + 0.32
             }
         } else {
-            hiddenDialFastRotationStreak = 0
-            hiddenDialFastModeUntil = 0
+            dialFastRotationStreak = 0
+            dialFastScrollModeUntil = 0
         }
 
-        lastHiddenDialScrollAt = now
-        hiddenDialScrollDirection = direction
-        return now < hiddenDialFastModeUntil
-            ? settings.surfaceDialFastScrollMultiplier
+        lastAcceleratedDialScrollAt = now
+        acceleratedDialScrollDirection = direction
+        return now < dialFastScrollModeUntil
+            ? max(2, min(fastMultiplier, 8))
             : 1
     }
 
@@ -406,21 +413,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dialSecondLayerExpiresAt = now + dialSecondLayerTimeout
             scheduleDialSecondLayerExpiry(for: profile.id)
         }
+        let settings = AppSettings.shared
+        let isScrollShortcut = [
+            "scrollUp", "scrollDown", "scrollLeft", "scrollRight"
+        ].contains(shortcut.resolvedKind)
+        let scrollMultiplier: Int
+        if settings.surfaceDialControlMode == "smart",
+           frontmostWindowIsFullScreen(),
+           isScrollShortcut {
+            switch action {
+            case .clockwise:
+                scrollMultiplier = dialScrollMultiplier(
+                    direction: 1,
+                    enabled: profile.fastScrollEnabled
+                        ?? settings.surfaceDialFastScrollEnabled,
+                    fastMultiplier: profile.fastScrollMultiplier
+                        ?? settings.surfaceDialFastScrollMultiplier
+                )
+            case .counterClockwise:
+                scrollMultiplier = dialScrollMultiplier(
+                    direction: -1,
+                    enabled: profile.fastScrollEnabled
+                        ?? settings.surfaceDialFastScrollEnabled,
+                    fastMultiplier: profile.fastScrollMultiplier
+                        ?? settings.surfaceDialFastScrollMultiplier
+                )
+            default:
+                scrollMultiplier = 1
+            }
+        } else {
+            scrollMultiplier = 1
+        }
         switch shortcut.resolvedKind {
         case "none":
             break
         case "scrollUp":
-            postScrollWheel(lines: shortcut.resolvedScrollLines)
+            postScrollWheel(lines: shortcut.resolvedScrollLines * scrollMultiplier)
         case "scrollDown":
-            postScrollWheel(lines: -shortcut.resolvedScrollLines)
+            postScrollWheel(lines: -shortcut.resolvedScrollLines * scrollMultiplier)
         case "scrollLeft":
             postScrollWheel(
-                lines: shortcut.resolvedScrollLines,
+                lines: shortcut.resolvedScrollLines * scrollMultiplier,
                 axis: .horizontal
             )
         case "scrollRight":
             postScrollWheel(
-                lines: -shortcut.resolvedScrollLines,
+                lines: -shortcut.resolvedScrollLines * scrollMultiplier,
                 axis: .horizontal
             )
         case "volumeUp":
@@ -569,6 +607,8 @@ struct DialAppProfile: Codable, Identifiable, Hashable {
     var bundleIdentifier: String
     var rotationDegrees: Int? = nil
     var secondLayerRotationDegrees: Int? = nil
+    var fastScrollEnabled: Bool? = nil
+    var fastScrollMultiplier: Int? = nil
     var counterClockwise: DialShortcut
     var clockwise: DialShortcut
     var press: DialShortcut
@@ -1381,6 +1421,22 @@ final class AppSettings: ObservableObject {
         NotificationCenter.default.post(name: .orbitSettingsChanged, object: nil)
     }
 
+    func updateSelectedDialFastScrollEnabled(_ enabled: Bool) {
+        guard let index = dialProfiles.firstIndex(where: {
+            $0.id.uuidString == selectedDialProfileID
+        }) else { return }
+        dialProfiles[index].fastScrollEnabled = enabled
+        saveDialProfiles()
+    }
+
+    func updateSelectedDialFastScrollMultiplier(_ multiplier: Int) {
+        guard let index = dialProfiles.firstIndex(where: {
+            $0.id.uuidString == selectedDialProfileID
+        }) else { return }
+        dialProfiles[index].fastScrollMultiplier = max(2, min(multiplier, 8))
+        saveDialProfiles()
+    }
+
     func addDialApplicationProfile() {
         let panel = NSOpenPanel()
         panel.title = "选择要配置 Surface Dial 的应用"
@@ -1937,6 +1993,38 @@ struct SettingsView: View {
                                 ),
                                 in: 1...36
                             )
+                            Toggle(
+                                "快速旋转时加速滚动",
+                                isOn: Binding(
+                                    get: {
+                                        settings.selectedDialProfile?.fastScrollEnabled
+                                            ?? settings.surfaceDialFastScrollEnabled
+                                    },
+                                    set: {
+                                        settings.updateSelectedDialFastScrollEnabled($0)
+                                    }
+                                )
+                            )
+                            Stepper(
+                                "快速滚动倍率：\(profile.fastScrollMultiplier ?? settings.surfaceDialFastScrollMultiplier)×",
+                                value: Binding(
+                                    get: {
+                                        settings.selectedDialProfile?.fastScrollMultiplier
+                                            ?? settings.surfaceDialFastScrollMultiplier
+                                    },
+                                    set: {
+                                        settings.updateSelectedDialFastScrollMultiplier($0)
+                                    }
+                                ),
+                                in: 2...8
+                            )
+                            .disabled(
+                                !(settings.selectedDialProfile?.fastScrollEnabled
+                                    ?? settings.surfaceDialFastScrollEnabled)
+                            )
+                            Text("只加速当前应用中配置为滚动的旋转动作；停顿、放慢或反向后恢复 1×。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
 
                         DialShortcutRow(
