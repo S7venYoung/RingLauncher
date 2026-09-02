@@ -121,9 +121,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     direction > 0 ? .clockwise : .counterClockwise
                 )
             } else {
-                guard self.controller?.isVisible == true
-                    || AppSettings.shared.surfaceDialRingActivation == "rotation" else {
-                    self.dialLogger.debug("Ignored Dial rotation while ring is hidden; activation=press")
+                if self.controller?.isVisible != true
+                    && AppSettings.shared.surfaceDialRingActivation == "press" {
+                    let lines = AppSettings.shared.surfaceDialHiddenScrollLines
+                    let scrollLines = direction > 0 ? -lines : lines
+                    postScrollWheel(lines: scrollLines)
+                    self.dialLogger.debug(
+                        "Dial rotated while ring hidden; vertical scroll lines=\(scrollLines, privacy: .public)"
+                    )
                     return
                 }
                 self.controller?.handleSurfaceDialRotation(direction)
@@ -1029,6 +1034,14 @@ final class AppSettings: ObservableObject {
             )
         }
     }
+    @Published var surfaceDialHiddenScrollLines: Int {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialHiddenScrollLines,
+                forKey: Keys.surfaceDialHiddenScrollLines
+            )
+        }
+    }
     @Published var surfaceDialSmartRingGesture: String {
         didSet {
             UserDefaults.standard.set(
@@ -1083,6 +1096,7 @@ final class AppSettings: ObservableObject {
         static let surfaceDialKeepAliveSeconds = "surfaceDialKeepAliveSeconds"
         static let surfaceDialControlMode = "surfaceDialControlMode"
         static let surfaceDialRingActivation = "surfaceDialRingActivation"
+        static let surfaceDialHiddenScrollLines = "surfaceDialHiddenScrollLines"
         static let surfaceDialSmartRingGesture = "surfaceDialSmartRingGesture"
         static let dialProfiles = "dialProfiles"
         static let selectedDialProfileID = "selectedDialProfileID"
@@ -1130,6 +1144,8 @@ final class AppSettings: ObservableObject {
             defaults.string(forKey: Keys.surfaceDialControlMode) ?? "ring"
         surfaceDialRingActivation =
             defaults.string(forKey: Keys.surfaceDialRingActivation) ?? "rotation"
+        surfaceDialHiddenScrollLines =
+            defaults.object(forKey: Keys.surfaceDialHiddenScrollLines) as? Int ?? 3
         surfaceDialSmartRingGesture =
             defaults.string(forKey: Keys.surfaceDialSmartRingGesture) ?? "longPress"
         let savedDialProfiles: [DialAppProfile]
@@ -1693,6 +1709,17 @@ struct SettingsView: View {
                     Text("只控制圆环隐藏时的首次呼出；圆环显示后仍是旋转选择、按下确认。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if settings.surfaceDialRingActivation == "press" {
+                        Stepper(
+                            "圆环隐藏时滚动：\(settings.surfaceDialHiddenScrollLines) 行/格",
+                            value: $settings.surfaceDialHiddenScrollLines,
+                            in: 1...10
+                        )
+                        .disabled(!settings.surfaceDialEnabled)
+                        Text("圆环隐藏时，逆时针向上滚动、顺时针向下滚动，并自动适配 macOS 自然滚动。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("启用触觉反馈", isOn: $settings.surfaceDialHapticsEnabled)
                         .disabled(!settings.surfaceDialEnabled)
                     Toggle(
