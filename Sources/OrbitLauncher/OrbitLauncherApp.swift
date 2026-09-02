@@ -54,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dialLongPressDidFire = false
     private var dialButtonUsesDirectControl = false
     private var lastSmartModeUsesDirectControl: Bool?
+    private var lastHiddenDialScrollAt: TimeInterval = 0
+    private var hiddenDialScrollDirection = 0
+    private var hiddenDialFastRotationStreak = 0
+    private var hiddenDialFastModeUntil: TimeInterval = 0
     private let dialDoublePressInterval: TimeInterval = 0.32
     private let dialLongPressInterval: TimeInterval = 0.65
     private let dialSecondLayerTimeout: TimeInterval = 5
@@ -123,11 +127,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 if self.controller?.isVisible != true
                     && AppSettings.shared.surfaceDialRingActivation == "press" {
-                    let lines = AppSettings.shared.surfaceDialHiddenScrollLines
+                    let settings = AppSettings.shared
+                    let multiplier = self.hiddenDialScrollMultiplier(
+                        direction: direction,
+                        settings: settings
+                    )
+                    let lines = settings.surfaceDialHiddenScrollLines * multiplier
                     let scrollLines = direction > 0 ? -lines : lines
                     postScrollWheel(lines: scrollLines)
                     self.dialLogger.debug(
-                        "Dial rotated while ring hidden; vertical scroll lines=\(scrollLines, privacy: .public)"
+                        "Dial hidden scroll lines=\(scrollLines, privacy: .public) multiplier=\(multiplier, privacy: .public)"
                     )
                     return
                 }
@@ -166,6 +175,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             surfaceDial.stop()
         }
+    }
+
+    /// MagSpeed-style software acceleration for the press-to-open mode.
+    /// Two consecutive fast detents enter fast scrolling; slowing down,
+    /// stopping, or reversing direction immediately restores precise scrolling.
+    private func hiddenDialScrollMultiplier(
+        direction: Int,
+        settings: AppSettings
+    ) -> Int {
+        guard settings.surfaceDialFastScrollEnabled else {
+            lastHiddenDialScrollAt = Date.timeIntervalSinceReferenceDate
+            hiddenDialScrollDirection = direction
+            hiddenDialFastRotationStreak = 0
+            hiddenDialFastModeUntil = 0
+            return 1
+        }
+
+        let now = Date.timeIntervalSinceReferenceDate
+        let interval = now - lastHiddenDialScrollAt
+        let sameDirection = direction == hiddenDialScrollDirection
+        let isFastDetent = sameDirection && interval > 0 && interval <= 0.12
+
+        if isFastDetent {
+            hiddenDialFastRotationStreak += 1
+            if hiddenDialFastRotationStreak >= 2 {
+                hiddenDialFastModeUntil = now + 0.32
+            }
+        } else {
+            hiddenDialFastRotationStreak = 0
+            hiddenDialFastModeUntil = 0
+        }
+
+        lastHiddenDialScrollAt = now
+        hiddenDialScrollDirection = direction
+        return now < hiddenDialFastModeUntil
+            ? settings.surfaceDialFastScrollMultiplier
+            : 1
     }
 
     private func currentDirectDialRotationDegrees() -> Int? {
@@ -1042,6 +1088,22 @@ final class AppSettings: ObservableObject {
             )
         }
     }
+    @Published var surfaceDialFastScrollEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialFastScrollEnabled,
+                forKey: Keys.surfaceDialFastScrollEnabled
+            )
+        }
+    }
+    @Published var surfaceDialFastScrollMultiplier: Int {
+        didSet {
+            UserDefaults.standard.set(
+                surfaceDialFastScrollMultiplier,
+                forKey: Keys.surfaceDialFastScrollMultiplier
+            )
+        }
+    }
     @Published var surfaceDialSmartRingGesture: String {
         didSet {
             UserDefaults.standard.set(
@@ -1097,6 +1159,8 @@ final class AppSettings: ObservableObject {
         static let surfaceDialControlMode = "surfaceDialControlMode"
         static let surfaceDialRingActivation = "surfaceDialRingActivation"
         static let surfaceDialHiddenScrollLines = "surfaceDialHiddenScrollLines"
+        static let surfaceDialFastScrollEnabled = "surfaceDialFastScrollEnabled"
+        static let surfaceDialFastScrollMultiplier = "surfaceDialFastScrollMultiplier"
         static let surfaceDialSmartRingGesture = "surfaceDialSmartRingGesture"
         static let dialProfiles = "dialProfiles"
         static let selectedDialProfileID = "selectedDialProfileID"
@@ -1146,6 +1210,10 @@ final class AppSettings: ObservableObject {
             defaults.string(forKey: Keys.surfaceDialRingActivation) ?? "rotation"
         surfaceDialHiddenScrollLines =
             defaults.object(forKey: Keys.surfaceDialHiddenScrollLines) as? Int ?? 3
+        surfaceDialFastScrollEnabled =
+            defaults.object(forKey: Keys.surfaceDialFastScrollEnabled) as? Bool ?? true
+        surfaceDialFastScrollMultiplier =
+            defaults.object(forKey: Keys.surfaceDialFastScrollMultiplier) as? Int ?? 4
         surfaceDialSmartRingGesture =
             defaults.string(forKey: Keys.surfaceDialSmartRingGesture) ?? "longPress"
         let savedDialProfiles: [DialAppProfile]
@@ -1716,6 +1784,20 @@ struct SettingsView: View {
                             in: 1...10
                         )
                         .disabled(!settings.surfaceDialEnabled)
+                        Toggle(
+                            "快速旋转时加速滚动",
+                            isOn: $settings.surfaceDialFastScrollEnabled
+                        )
+                        .disabled(!settings.surfaceDialEnabled)
+                        Stepper(
+                            "快速滚动倍率：\(settings.surfaceDialFastScrollMultiplier)×",
+                            value: $settings.surfaceDialFastScrollMultiplier,
+                            in: 2...8
+                        )
+                        .disabled(
+                            !settings.surfaceDialEnabled
+                                || !settings.surfaceDialFastScrollEnabled
+                        )
                         Text("圆环隐藏时，逆时针向上滚动、顺时针向下滚动，并自动适配 macOS 自然滚动。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
